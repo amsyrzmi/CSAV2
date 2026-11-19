@@ -223,7 +223,7 @@ nothing else is inherited). These optional lines set the settings above; each is
 file is read, and a value outside its set or range stops `plan` and `apply` before anything runs.
 Unset, compose uses the settings' own default, so nothing changes. The file's header lists only
 the eight required keys; these optional lines are allowed too. Adding or changing one is a reviewed
-PR, then a rollout with the `staging-rollout` skill (the service whose environment changed is
+PR, then a rollout with the `deploy` skill (the service whose environment changed is
 recreated).
 
 | Line in `deploy/staging-rollout.env` | Values | Sets (service) |
@@ -293,7 +293,7 @@ same settings in that deployment's environment and restart the gateway or worker
    hidden prompt, writes `pipeline/staging_jev_key` (mode 0400, no trailing newline), refuses to
    overwrite an existing file or follow a symlink, and prints only the file's path. Then a reviewed
    PR adds `CSA_STAGING_JEV_SECRET=staging_jev_key` to `deploy/staging-rollout.env`, with any floor
-   or `llm` lines from step 2, and you roll out with the `staging-rollout` skill (`plan` stops,
+   or `llm` lines from step 2, and you roll out with the `deploy` skill (`plan` stops,
    exit 2, until the key file exists). That turns the staff areas on in the gateway, because `auto`
    becomes `cascade`. The worker has the key from then on too. For a company with **no** stored
    `decide_mode` its classifier stays on the LLM until step 4; a company whose policy already

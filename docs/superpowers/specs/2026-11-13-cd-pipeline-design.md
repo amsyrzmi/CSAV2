@@ -157,12 +157,13 @@ after one click", and a merge waits on that click.
 - **After apply:** the instance runs its smoke test; then the workflow runs a public smoke test
   against the production console origin (kept as an environment secret, masked). A failed smoke test
   fails the run (see Rollback).
-- **Auto-start the plan (goal 7).** A second trigger, `workflow_run` of `deploy-staging` succeeding,
-  starts the plan for that commit when the repository variable `PROD_AUTO_PLAN` is `true` (default
-  `false`). The apply still waits on the `production` environment. A new auto-started run cancels
-  earlier runs of the workflow whose apply job is still `waiting`; the apply-time staleness check
-  makes an approval that races the cancel harmless. A run whose apply job is `in_progress` is never
-  cancelled.
+- **Auto-start the plan (goal 7).** A separate workflow, `deploy-production-auto`, started by
+  `workflow_run` of `deploy-staging`, dispatches the plan for the tip of `main` when the repository
+  variable `PROD_AUTO_PLAN` is `true` (default `false`). The apply still waits on the `production`
+  environment. The auto workflow cancels earlier auto-started runs whose apply job is still
+  `waiting`, by an explicit API call; the apply-time staleness check makes an approval that races the
+  cancel harmless. A run whose apply job is `in_progress` is never knowingly cancelled (see "Changes
+  made while building PR 3" for the one-round-trip window).
 
 ### The workflow talks to GitHub, the hosts do not
 
@@ -367,6 +368,99 @@ points of the design above. They are what the code and the runbooks now do.
   workflow started by `workflow_run` of deploy-staging would be a fourth level and the last allowed
   (a fifth does not run); prefer a `workflow_dispatch` from deploy-staging's token (allowed) so the
   chain stays short. `publish-staging-images.yml` still uses unpinned `@v4` actions.
+
+## Changes made while building PR 3
+
+The plan for PR 3 (`docs/superpowers/plans/2026-11-18-cd-pipeline-pr3.md`) changed or fixed these
+points of the design above. They are what the code and the runbooks now do. The three statements of
+"deploy-production (changes)" that no longer held (a second trigger in `deploy-production`, a new
+run that cancels earlier runs, and an `in_progress` apply that is "never cancelled") are corrected
+there in place.
+
+- **The auto-plan is a separate workflow, `deploy-production-auto`.** A run that waits for approval
+  holds the concurrency group `deploy-production`, so a gate job inside the new run would never start
+  while the run it must cancel is waiting; concurrency also cannot cancel only a run whose apply is
+  `waiting` and spare one whose apply is `in_progress`. A separate workflow also leaves manual
+  dispatch exactly as it was: `deploy-production.yml` is untouched (its `Manual dispatch only`
+  header kept), and so are `resolve_commit.sh`, `ssm_run.sh`, `parse_plan.sh`, `deploy_entry.sh` and
+  `public_smoke.sh`. A failing auto-plan is a red `deploy-production-auto` run, not a red staging or
+  production run. The workflow runs `auto_plan.sh` three times: `check`, `supersede` and `start`.
+- **The dispatch and the `GITHUB_TOKEN` exception.** `start` runs `gh workflow run deploy-production`
+  with no `sha`, so the run plans the tip of `main` and can never request an explicit rollback. GitHub
+  documents that events made with `GITHUB_TOKEN` create no new run, except `workflow_dispatch` and
+  `repository_dispatch`; the job holds `actions: write` for that. It then verifies that a run
+  appeared and fails red when none did.
+- **The chain count.** ci, `publish-staging-images`, `deploy-staging` and `deploy-production-auto`
+  are three `workflow_run` links, the last allowed by GitHub's limit of three levels; the dispatch
+  comes last and is a `workflow_dispatch` run, not a fourth link. Whether the dispatched run counts
+  is not documented, so the live acceptance (Part C of the plan) proves it, and `start` fails red,
+  not silently, when no run appears.
+- **`check` decides; the conclusion of `deploy-staging` does not.** `deploy-staging` ends green for
+  `paused`, `nothing to roll out`, `already staged` and `superseded` as well as for a real rollout,
+  so `auto_plan.sh check` asks the facts with `resolve_commit.sh` for the staging target. It ends
+  green with `nothing to plan: ...` when ci or the images are not ready, when the tip has no staged
+  record, or when a `deploy-production` run for the tip is already queued, in progress, `waiting` or
+  successful. A run that failed or was cancelled does not block a new plan. Any other resolver
+  failure is red.
+- **The cancel rule and its race.** The only mechanism is `POST .../actions/runs/{id}/cancel`.
+  `supersede` cancels a run only when, read just before the call, its status is `waiting`, its
+  event is `workflow_dispatch`, its triggering actor is `github-actions[bot]`, its branch is `main`,
+  its sha differs from the tip, and its jobs are exactly `plan` (success) and `apply` (`waiting`).
+  A person's manual run is never touched, and a run whose apply is `in_progress` is never knowingly
+  cancelled. Every field fails closed: an unreadable field leaves the run alone. The rule is a read
+  followed by a call, so a window of one API round trip remains in which an approval can land first;
+  the apply's first steps (the variables and the staleness check) come before the AWS credentials, so
+  the outcome is benign. Two limits are accepted: an earlier auto run still in its `plan` job is
+  missed, and GitHub's own rule can replace a person's pending manual run with an auto dispatch.
+- **Security: the auto path cannot skip the approval.** The approval is a property of the
+  `production` environment, not of a workflow file. The auto workflow has no environment, no
+  `id-token` permission and no secret, never calls the pending-deployments endpoint (a test asserts
+  it) and never checks out or runs anything from the triggering run. It and its scripts never approve:
+  the approver is always a person.
+- **The setup script: read, build the whole desired state, write only on a difference, re-read.**
+  `deploy/github/setup-environments.sh` reads each environment and writes only what differs. Two
+  observations about `PUT .../environments/<env>`, neither documented: a hand run on 2026-11-17 was
+  read as replace-on-PUT, and a controlled probe on a throwaway environment on 2026-11-18 showed that
+  a partial PUT (only `deployment_branch_policy`) did not reset reviewers, `prevent_self_review` or
+  `can_admins_bypass`, and that `can_admins_bypass` is accepted by the PUT body though it is not
+  documented. The plan relies on neither: the script builds the complete body from the current values
+  plus the change and re-reads the environment after every write, failing loudly when anything
+  differs from what was intended. The tests run against a stateful fake `gh` under both PUT
+  semantics (merge and replace). The script never prints a secret (values reach `gh secret set` on
+  standard input only), and `--check` reads everything and reports without writing.
+- **The owner's decision of 2026-11-18 on admin bypass.** `can_admins_bypass` was set to `false` on
+  `production` and `production-plan` on 2026-11-18 at the owner's request, so a repository admin can
+  no longer skip the approval; the script enforces and reports it. `prevent_self_review` stays
+  `false` by the owner's earlier decision (one approval, self-review allowed). `staging` and
+  `staging-images` keep `true`, carried over and reported.
+- **`staging-images` had no branch policy.** On 2026-11-18 it had no reviewer, as the design says,
+  and no branch restriction either, although `deploy/RELEASE.md` described `main` only. A real
+  environment with no custom policies answers 404 to `.../deployment-branch-policies`, so the script
+  derives "missing" from the environment itself and lists or POSTs a policy only after the PUT that
+  turns custom policies on. Until `setup-environments.sh staging` runs for real, `staging-images`
+  still has no branch policy.
+- **Secrets and variables, by environment.** `staging`: `STAGING_DEPLOY_ROLE_ARN`,
+  `STAGING_INSTANCE_ID`; `staging-images`: none; `production-plan`: `PROD_PLAN_ROLE_ARN`,
+  `PROD_INSTANCE_ID`; `production`: `PROD_APPLY_ROLE_ARN`, `PROD_INSTANCE_ID`,
+  `PROD_CONSOLE_ORIGIN`. Repository variables: `IMAGE_NAMESPACE`, `STAGING_DEPLOY_REGION`,
+  `PROD_DEPLOY_REGION`, and the switches `STAGING_AUTO_PAUSED` and `PROD_AUTO_PLAN`. A secret that
+  exists is overwritten only when its `SETUP_<NAME>` is set.
+- **One runbook and one `deploy` skill.** `deploy/DEPLOY.md` holds the cross-cutting text; the
+  generic sections moved there whole and a permanent moved-heading test keeps the moved and the
+  stubbed headings in place. Completeness of the move was proved once by a one-off line check, not by
+  a frozen list of every heading. One `deploy` skill replaces `staging-rollout` and
+  `production-deploy` and keeps their rules, including: never approve, never reject, and read a run's
+  state before any cancel.
+- **The stale publish-approval wording is fixed in every place** with one sentence: "The image
+  publish needs no approval today (the `staging-images` environment has no reviewer). If a reviewer
+  is added to `staging-images`, every merge waits on that click." The places were the publish
+  workflow header, `deploy/RELEASE.md`, `deploy/STAGING_PIPELINE.md` and the staging skill; the
+  design's statement that `deploy/PRODUCTION.md` said it too was wrong: PRODUCTION.md had no such
+  sentence, so nothing changed there. The dated history in `deploy/RELEASE.md` is kept as it is.
+- **Pins.** `publish-staging-images.yml` now pins `actions/checkout` and `actions/download-artifact`
+  to the commit each `v4` tag points at, with a version comment, and stays on major 4 (the workflow
+  publishes the images, and a major upgrade is a different change). The unpinned actions of `ci.yml`
+  are not part of PR 3.
 
 ## Left to the builder
 

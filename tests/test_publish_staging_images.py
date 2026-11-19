@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.test_production_deploy_assets import PIN
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 PUBLISH = WORKFLOWS / "publish-staging-images.yml"
@@ -25,6 +27,16 @@ MANIFEST_TYPE = "application/vnd.oci.image.manifest.v1+json"
 
 def _text() -> str:
     return PUBLISH.read_text(encoding="utf-8")
+
+
+def _header_flat() -> str:
+    """The leading comment block, comment prefixes stripped and whitespace collapsed."""
+    header: list[str] = []
+    for line in _text().splitlines():
+        if not line.startswith("#"):
+            break
+        header.append(line.removeprefix("#"))
+    return " ".join(" ".join(header).split())
 
 
 def _run_block(step_name: str) -> str:
@@ -41,6 +53,21 @@ def _run_block(step_name: str) -> str:
 
 
 RUN_ID_EXPR = "${{ inputs.ci_run_id || github.event.workflow_run.id }}"
+
+
+def test_every_action_is_pinned_to_a_commit_with_a_version_comment() -> None:
+    uses = [line for line in _text().splitlines() if re.match(r"^\s*(?:- )?uses:", line)]
+    assert len(uses) == 2, uses
+    assert all(PIN.match(line) for line in uses), uses
+
+
+def test_the_header_says_there_is_no_approval_today_and_what_a_reviewer_would_do() -> None:
+    header = _header_flat()
+    assert "no approval today" in header
+    assert "the `staging-images` environment has no reviewer" in header
+    assert "If a reviewer is added to `staging-images`, every merge waits on that click" in header
+    # The old clause wrapped across two lines, so only the flattened header can prove it is gone.
+    assert "environment approval is still required" not in header
 
 
 def test_triggers_are_manual_dispatch_and_completed_main_ci() -> None:

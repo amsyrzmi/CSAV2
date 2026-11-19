@@ -17,6 +17,7 @@ services are running or deployed.
 | Console HTTP contract | [CONSOLE_API.md](./CONSOLE_API.md) and [OpenAPI snapshot](./console_openapi.json) |
 | Local development operations | [Development runbook](./RUNBOOK.md) |
 | Build-only release and staged deployment gates | [Release contract](../deploy/RELEASE.md) |
+| Deploying staging and production | [Deploy runbook](../deploy/DEPLOY.md) |
 
 Do not load every historical handoff or plan as general context. Start
 with PROGRESS.md and read only the plan and tests relevant to the requested
