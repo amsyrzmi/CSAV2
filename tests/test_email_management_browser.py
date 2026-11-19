@@ -39,6 +39,7 @@ from csa.workspace.contracts import (
 )
 from playwright.async_api import async_playwright, expect
 
+from tests.shell_counts_stub import fulfill_shell_counts
 from tests.test_workspace_browser import (
     CSRF,
     ROOT,
@@ -314,6 +315,8 @@ class MailWorld:
         return 404, {"detail": "unexpected synthetic call"}
 
     async def route(self, request_route: Any) -> None:
+        if await fulfill_shell_counts(request_route):
+            return
         request = request_route.request
         path, _, query = request.url.split("/console/v1/")[1].partition("?")
         body: Any = request.post_data_json if request.method in {"POST", "PUT"} else None

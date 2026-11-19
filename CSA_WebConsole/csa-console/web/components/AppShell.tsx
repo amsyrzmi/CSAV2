@@ -13,6 +13,7 @@ import { AssistantDock } from "@/components/console/AssistantDock";
 import { AssistantProvider } from "@/lib/assistant-conversation";
 import { useHrNav } from "@/components/console/hr/useHrNav";
 import { Rail } from "@/components/console/shell/Rail";
+import { useShellCounts } from "@/components/console/shell/useShellCounts";
 import type { ShellAccount } from "@/components/console/shell/UserMenu";
 import { TopBar } from "@/components/console/shell/TopBar";
 import { Notice } from "@/components/console/ui";
@@ -60,6 +61,13 @@ export function AppShell({
   const links = baseLinks.map((link) =>
     link.key === "hr" && hrItems?.length ? { ...link, children: hrItems } : link,
   );
+  // The one shell poll (notification and Needs us counts); Tasks 3 and 4 hand `counts` to the rail and the bell.
+  const counts = useShellCounts({
+    role: me.role,
+    hasInboxLink: baseLinks.some((link) => link.key === "inbox"),
+    path,
+  });
+  void counts;
   const [rail, setRail] = useState<RailState>(initialRail ?? "collapsed");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);

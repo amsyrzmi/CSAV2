@@ -25,6 +25,7 @@ import pytest
 from playwright.async_api import Page, async_playwright, expect
 
 from tests import test_services_redesign_browser as services
+from tests.shell_counts_stub import fulfill_shell_counts
 from tests.test_payments_browser import picture_file, synthetic_png
 from tests.test_services_browser import (
     TENANT,
@@ -286,6 +287,8 @@ class World:
         self.unexpected: list[str] = []
 
     async def route(self, request_route: Any) -> None:
+        if await fulfill_shell_counts(request_route):
+            return
         request = request_route.request
         path, _, query = request.url.split("/console/v1/")[1].partition("?")
         params = {key: values[0] for key, values in parse_qs(query).items()}

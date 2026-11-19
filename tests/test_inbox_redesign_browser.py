@@ -30,6 +30,7 @@ from csa.inbox_queue.settings import InboxSettings
 from playwright.async_api import Page, async_playwright, expect
 from pydantic import ValidationError
 
+from tests.shell_counts_stub import fulfill_shell_counts
 from tests.test_payments_browser import synthetic_png
 from tests.test_services_browser import (
     ROOT,
@@ -490,6 +491,8 @@ class Inbox:
         return 200, dict(self.settings)
 
     async def route(self, request_route: Any) -> None:
+        if await fulfill_shell_counts(request_route):
+            return
         request = request_route.request
         path, _, query = request.url.split("/console/v1/")[1].partition("?")
         status, data = 200, None

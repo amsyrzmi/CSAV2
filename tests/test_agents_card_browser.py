@@ -27,6 +27,8 @@ import httpx
 import pytest
 from playwright.async_api import Locator, Page, async_playwright, expect
 
+from tests.shell_counts_stub import fulfill_shell_counts
+
 pytestmark = pytest.mark.asyncio
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -248,6 +250,8 @@ class Stub:
     unexpected: list[str] = field(default_factory=list)
 
     async def route(self, request_route: Any) -> None:
+        if await fulfill_shell_counts(request_route):
+            return
         request = request_route.request
         path = request.url.split("/console/v1/")[1].partition("?")[0]
         status, data = 200, None

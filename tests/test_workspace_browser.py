@@ -44,6 +44,8 @@ from csa.workspace.contracts import (
 )
 from playwright.async_api import Page, async_playwright, expect
 
+from tests.shell_counts_stub import fulfill_shell_counts
+
 # One `next dev` and one Chromium serve every case in this file, so they share a module loop.
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
@@ -396,6 +398,8 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
     proposal_path = re.compile(r"workspace/proposals/([0-9a-f-]+)/(confirm|cancel)")
 
     async def route(request_route: Any) -> None:
+        if await fulfill_shell_counts(request_route):
+            return
         request = request_route.request
         path, _, query = request.url.split("/console/v1/")[1].partition("?")
         body: Any = request.post_data_json if request.method == "POST" else None
@@ -766,6 +770,8 @@ class PlanApi:
         return [c["path"] for c in self.calls if c["path"].startswith("email/drafts/")]
 
     async def route(self, request_route: Any) -> None:
+        if await fulfill_shell_counts(request_route):
+            return
         request = request_route.request
         path, _, query = request.url.split("/console/v1/")[1].partition("?")
         body: Any = request.post_data_json if request.method == "POST" else None
