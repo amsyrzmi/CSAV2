@@ -454,6 +454,8 @@ fire, `fire_count >= 1` in `csa/inbox_queue/reminders.py`), not at the second re
 says. A staff-chat message held by quiet hours is delivered when they end even if the item has moved on
 by then (the console rows are unaffected); this is a known limit until PR 3.
 
+**Closed in PR 3.** A held `inbox.overdue` message is re-checked when it is released: if the item is no longer `needs_staff` for the same cycle, the row is set to `cancelled` and nothing is sent (design `docs/superpowers/specs/2026-11-19-inbox-pr3-delivery-design.md`, section 5.1).
+
 - **Existing items at rollout.** A one-time job in PR 2 schedules the overdue reminder for each
   backfilled `needs_staff` item with a fresh clock (due one response target after rollout), so no company
   receives a burst of reminders for old items.
@@ -477,6 +479,8 @@ Email targets (a shared mailbox address, sent through the console mailer) can be
 disabled and removed, several per company. WhatsApp and webhook targets exist in the schema but have no
 sender, so the page does not offer them.
 The same page holds the Inbox settings of 5.3 and each person's own notification preferences.
+
+**Delivered in PR 3** as the Notifications page (`/notifications`, `/portal/notifications`) and email delivery from the worker; see `docs/superpowers/specs/2026-11-19-inbox-pr3-delivery-design.md` and the PR 3 entry in `docs/PROGRESS.md`.
 
 ## 8. The reusable layer (statement for HR)
 
