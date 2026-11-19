@@ -9,6 +9,7 @@ from typing import Annotated, Literal, Union
 from uuid import UUID
 
 from pydantic import (
+    AliasChoices,
     AwareDatetime,
     BaseModel,
     ConfigDict,
@@ -379,7 +380,9 @@ class BookingActionProposal(_Contract):
     title: BoundedText | None = None
     minutes: int | None = Field(default=None, ge=1, le=1440)
     people: list[PersonText] = Field(default_factory=list, max_length=10)
-    rooms: list[PersonText] = Field(default_factory=list, max_length=10)
+    rooms: list[PersonText] = Field(
+        default_factory=list, max_length=10, validation_alias=AliasChoices("rooms", "room")
+    )
     include_me: bool = False
     customer: PersonText | None = None
     day: date | None = None
@@ -388,6 +391,13 @@ class BookingActionProposal(_Contract):
     on_day: date | None = None
     at_time: ClockText | None = None
     about: PersonText | None = None
+
+    @field_validator("rooms", mode="before")
+    @classmethod
+    def one_room_is_a_list(cls, value: object) -> object:
+        """The model spells one room ``room`` (as the availability question does) and may give
+        it as a bare name: read it as a list of one."""
+        return [value] if isinstance(value, str) else value
 
 
 class RecipientSpec(_Contract):

@@ -3606,12 +3606,14 @@ def test_planner_prompt_names_the_five_process_views_in_one_bullet() -> None:
         "what are my tasks",
         "apa tugasan saya",
         "what is outstanding for Aina's onboarding",
-        "apa yang belum selesai untuk onboarding Aina",
+        "tugasan onboarding Aina yang belum selesai",
         "who is onboarding",
         "who is leaving",
         "siapa yang akan berhenti",
+        "rakan sekerja yang akan berhenti",
         "what is overdue",
-        "apa yang tertunggak",
+        "is anything running late",
+        "tugasan yang tertunggak",
         "lewat",
     ):
         assert phrase in bullet, phrase
@@ -3635,11 +3637,14 @@ def test_planner_prompt_keeps_neighbouring_actions_apart_from_process_reads() ->
     assert (
         "Marking someone as leaving stays hr_person_leave, opening a profile stays "
         "hr_person_open, who reports to someone or who is in a department stays people_query, "
-        "and a request for training stays training_submit, never hr_process_read."
+        "changing a person's manager, title or details stays hr_person_update, a question about "
+        "what a training video says stays training_ask, and a request for training stays "
+        "training_submit, never hr_process_read."
     ) in flat
     assert (
-        "Completing, approving, skipping or changing a task is done by the person in the console "
-        "(My tasks): answer that in plain words with answer, never a card."
+        "Completing, approving, skipping, rescheduling or reassigning a process task is done by "
+        "the person in the console (My tasks): answer that in plain words with answer, never a "
+        "card."
     ) in flat
 
 
