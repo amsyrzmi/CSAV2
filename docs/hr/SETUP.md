@@ -325,9 +325,16 @@ The list is shown once: the turn is stored as a count only, so a reloaded thread
 with the same request key) shows "HR process answer: N items." ("Jawapan proses HR: N item.") in
 place of the list, as the inbox summary does. Ask again to see the list.
 
-**The assistant never completes, approves, sends back, skips, reschedules, reassigns, cancels or
-closes a step.** "Mark my task done" is answered with a sentence pointing to **My tasks**; do it
-there. A Malay answer shows a step title in English when its template has no Malay text, and the
+**The assistant never approves, sends back, skips, reschedules, reassigns, cancels or closes a
+step.** Those are done in **My tasks** and **Processes**; the assistant says so in one sentence.
+**"Mark my task done"** is the one write: the assistant finds your own open step and shows one
+card ("Mark a step done": the step, who it is for, the due date and what happens after you
+confirm). Nothing changes until you select Confirm. If you have several open steps it asks which.
+A step that needs an approver then waits for that approval (the card says by whom); the assistant
+never approves it. It does not offer a step the system checks for itself (your contact details, an
+account link, access removal), a step in the HR pool, or one that is already waiting for approval:
+use **My tasks**. The assistant needs the tenant's HR assistant switch on, as for the people cards.
+A Malay answer shows a step title in English when its template has no Malay text, and the
 default templates are English only. The page names (My tasks, Processes) stay in English inside
 Malay sentences.
 

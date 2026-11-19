@@ -1600,13 +1600,55 @@
   {
     "id": "hr_process_neg-en-5",
     "language": "en",
-    "message": "Mark my task done",
+    "message": "Please approve Aina's laptop task",
     "facts": {
       "preset": "staff_basic"
     },
     "expect": {
       "actions": [
         "answer"
+      ],
+      "not_actions": [
+        "hr_process_read",
+        "hr_task_complete",
+        "hr_person_add",
+        "hr_person_update",
+        "hr_person_leave",
+        "training_submit"
+      ]
+    }
+  },
+  {
+    "id": "hr_process_neg-ms-5",
+    "language": "ms",
+    "message": "Luluskan tugasan komputer riba Aina",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "not_actions": [
+        "hr_process_read",
+        "hr_task_complete",
+        "hr_person_add",
+        "hr_person_update",
+        "hr_person_leave",
+        "training_submit"
+      ]
+    }
+  },
+  {
+    "id": "hr_task-en-1",
+    "language": "en",
+    "message": "Mark my task done",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_task_complete"
       ],
       "not_actions": [
         "hr_process_read",
@@ -1618,7 +1660,7 @@
     }
   },
   {
-    "id": "hr_process_neg-ms-5",
+    "id": "hr_task-ms-1",
     "language": "ms",
     "message": "Tandakan tugasan saya sebagai selesai",
     "facts": {
@@ -1626,7 +1668,47 @@
     },
     "expect": {
       "actions": [
-        "answer"
+        "hr_task_complete"
+      ],
+      "not_actions": [
+        "hr_process_read",
+        "hr_person_add",
+        "hr_person_update",
+        "hr_person_leave",
+        "training_submit"
+      ]
+    }
+  },
+  {
+    "id": "hr_task-en-2",
+    "language": "en",
+    "message": "I have finished the bank details step, please mark it done",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_task_complete"
+      ],
+      "not_actions": [
+        "hr_process_read",
+        "hr_person_add",
+        "hr_person_update",
+        "hr_person_leave",
+        "training_submit"
+      ]
+    }
+  },
+  {
+    "id": "hr_task-ms-2",
+    "language": "ms",
+    "message": "Saya sudah siap langkah butiran bank, tolong tandakan selesai",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "hr_task_complete"
       ],
       "not_actions": [
         "hr_process_read",

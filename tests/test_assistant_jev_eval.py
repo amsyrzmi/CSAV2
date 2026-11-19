@@ -142,6 +142,7 @@ SMOKE_LEFT_OUT = {
     "hr_process_neg-en-1", "hr_process_neg-ms-1", "hr_process_neg-en-2", "hr_process_neg-ms-2",
     "hr_process_neg-en-3", "hr_process_neg-ms-3", "hr_process_neg-en-4", "hr_process_neg-ms-4",
     "hr_process_neg-en-5", "hr_process_neg-ms-5",
+    "hr_task-en-1", "hr_task-ms-1", "hr_task-en-2", "hr_task-ms-2",
 }  # fmt: skip
 
 

@@ -582,6 +582,12 @@ export function resultSummary(proposal: ProposalOut, language: Language = "en"):
     case "hr_person":
       // csa/workspace/hr_people.py: the receipt is the HR operation's, so the card says what.
       return say("summary_hr_person", { title: proposal.card.title });
+    case "hr_task":
+      // csa/workspace/hr_task_card.py: the receipt is the task operation's (ids, statuses and
+      // version), so the line says only whether the step waits for an approval.
+      return field(result, "task_status") === "awaiting_approval"
+        ? say("summary_hr_task_waiting")
+        : say("summary_hr_task_done");
     case "booking_action": {
       // csa/bookings/executor.py receipt: change, booking_id, status, starts_at, version, and
       // (after a real run) email and customer_told. No title, name or address is stored.

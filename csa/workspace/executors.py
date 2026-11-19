@@ -109,6 +109,21 @@ _CARD_TEXT: dict[Language, dict[str, str]] = {
         "hr_leave_title": "Mark {name} as leaving",
         "hr_leave_summary": "{name}'s last day is {day}. Their direct reports move to the new "
         "manager on that day.",
+        "hr_task_title": "Mark a step done",
+        "hr_task_summary": 'Mark "{title}" as done for {name}\'s {kind}. Nothing changes until '
+        "you select Confirm.",
+        "label_step": "Step",
+        "label_for": "For",
+        "label_due": "Due",
+        "label_after": "After you confirm",
+        "task_after_done": "The step is marked done.",
+        "task_after_approval": "The step then waits for approval by {by}.",
+        "task_approver_hr": "HR",
+        "task_approver_manager": "the manager",
+        "task_kind_onboarding": "onboarding",
+        "task_kind_offboarding": "offboarding",
+        "task_kind_custom": "process",
+        "task_overdue": "overdue",
         "label_name": "Name",
         "label_job_title": "Job title",
         "label_department": "Department",
@@ -195,6 +210,21 @@ _CARD_TEXT: dict[Language, dict[str, str]] = {
         "hr_leave_title": "Tandakan {name} akan berhenti",
         "hr_leave_summary": "Hari terakhir {name} ialah {day}. Orang bawahan langsungnya "
         "berpindah kepada pengurus baharu pada hari itu.",
+        "hr_task_title": "Tandakan langkah sebagai selesai",
+        "hr_task_summary": 'Tandakan "{title}" sebagai selesai untuk {kind} {name}. Tiada '
+        "apa-apa berubah sehingga anda memilih Sahkan.",
+        "label_step": "Langkah",
+        "label_for": "Untuk",
+        "label_due": "Tarikh akhir",
+        "label_after": "Selepas anda mengesahkan",
+        "task_after_done": "Langkah itu ditandakan selesai.",
+        "task_after_approval": "Langkah itu kemudian menunggu kelulusan {by}.",
+        "task_approver_hr": "HR",
+        "task_approver_manager": "pengurus",
+        "task_kind_onboarding": "onboarding",
+        "task_kind_offboarding": "offboarding",
+        "task_kind_custom": "proses",
+        "task_overdue": "lewat",
         "label_name": "Nama",
         "label_job_title": "Jawatan",
         "label_department": "Jabatan",
@@ -716,6 +746,7 @@ def build_proposal_registry() -> ProposalRegistry:
     # and keys.
     from csa.bookings.executor import BookingActionExecutor
     from csa.workspace.hr_people import HrPersonExecutor
+    from csa.workspace.hr_task_card import HrTaskExecutor
 
     executors: dict[ProposalKind, ProposalExecutor] = {
         "training_submit": TrainingSubmitExecutor(),
@@ -724,6 +755,7 @@ def build_proposal_registry() -> ProposalRegistry:
         "inbox_decision": InboxDecisionExecutor(),
         "subscription_action": SubscriptionActionExecutor(),
         "hr_person": HrPersonExecutor(),
+        "hr_task": HrTaskExecutor(),
         "booking_action": BookingActionExecutor(),
     }
     # A plan's steps run through these same executors, called directly, not through the registry.

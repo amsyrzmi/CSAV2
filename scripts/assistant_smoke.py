@@ -21,8 +21,8 @@ when a batch email's mode came from the server (the planner left it out), ``RATE
 case with ``--repeat``, and a last ``N passed, M failed`` line. Never a message, model text,
 subject, body or address; the key is never printed. Exit 0 when every sample passes, 1 when any
 fails, 2 on a setup error (no model key, the model unavailable on the first call, an unknown
-case id, a missing or invalid case file). A run is about 106 model calls: a planner call for
-each of the 95 cases plus a drafting call for each of the 11 draft cases, up to about 201 with
+case id, a missing or invalid case file). A run is about 110 model calls: a planner call for
+each of the 99 cases plus a drafting call for each of the 11 draft cases, up to about 209 with
 re-plans (up to twice the cases, plus the drafting calls).
 """
 
@@ -121,6 +121,7 @@ ActionName = Literal[
     "people_query",
     "hr_person_open",
     "hr_process_read",
+    "hr_task_complete",
     "booking_action",
     "email_batch",
     "plan",

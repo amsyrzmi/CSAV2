@@ -493,4 +493,6 @@ def _distinct(names: list[str], rests: list[str], text: dict[str, str]) -> list[
     return labels
 
 
-__all__ = ["SHOWN", "ProcessAnswer", "resolve_process_read"]
+Reader = _Reader  # the process reader, for the "mark my task done" card (hr_task_card.py)
+
+__all__ = ["SHOWN", "ProcessAnswer", "Reader", "resolve_process_read"]
