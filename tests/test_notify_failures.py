@@ -205,7 +205,7 @@ async def test_dead_telegram_target_also_notifies(world: World) -> None:  # noqa
     assert rows[0][3]["channel"] == "telegram"
 
 
-async def test_reaped_dead_row_notifies(world: World, owner_pool: Any) -> None:  # noqa: F811,F811
+async def test_reaped_dead_row_notifies(world: World, owner_pool: Any) -> None:  # noqa: F811
     _quiesce_other_tenants(world)
     admin = _person(world, role="tenant_admin")
     target_id = _target(world)
@@ -362,17 +362,86 @@ async def test_failure_kinds_never_enter_an_outbox(world: World) -> None:  # noq
     ) == [(0,)]
 
 
-async def test_a_failing_hook_does_not_mask_the_failure_or_roll_it_back(
+async def _python_error(conn: Any) -> None:
+    raise RuntimeError("hook broke")
+
+
+async def _database_error(conn: Any) -> None:
+    """A real SQL error on the caller's connection: aborts the transaction unless a savepoint
+    around the hook catches it."""
+    await conn.execute("SELECT * FROM no_such_table_for_the_hook_test")
+
+
+_BREAKERS = pytest.mark.parametrize("breaker", [_python_error, _database_error])
+
+
+def _break_after_the_flag(monkeypatch: pytest.MonkeyPatch, breaker: Any) -> None:
+    """Make the notice-writing step fail, AFTER the flag-mark UPDATE has already run."""
+
+    async def broken_notify_people(conn: Any, *_args: Any, **_kwargs: Any) -> None:
+        await breaker(conn)
+
+    monkeypatch.setattr(failures, "notify_people", broken_notify_people)
+
+
+@_BREAKERS
+async def test_a_failing_target_hook_does_not_mask_the_failure_or_roll_it_back(
     world: World,  # noqa: F811
     monkeypatch: pytest.MonkeyPatch,
+    breaker: Any,
 ) -> None:
-    async def boom(*_args: Any, **_kwargs: Any) -> bool:
-        raise RuntimeError("hook broke")
-
-    monkeypatch.setattr(failures, "report_dead_target", boom)
+    _person(world, role="tenant_admin")
+    _break_after_the_flag(monkeypatch, breaker)
     target_id = _target(world)
     with structlog.testing.capture_logs() as logs:
-        await _kill(world, target_id)  # asserts the row is dead
-    assert _flag(world, target_id) is None  # the savepoint rolled the flag back with the notice
+        await _kill(world, target_id)  # asserts the row committed as dead
+    # The flag UPDATE ran before the break; the savepoint rolled it back with the notice.
+    assert _flag(world, target_id) is None
+    assert _notices(world, "notify.target_failed") == []
     events = [entry for entry in logs if entry["event"] == "target_failure_report_failed"]
     assert len(events) == 1 and events[0]["target_id"] == str(target_id)
+
+
+@_BREAKERS
+async def test_a_failing_person_hook_does_not_mask_the_failure_or_roll_it_back(
+    world: World,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    breaker: Any,
+) -> None:
+    user = _person(world)
+    _prefs(world.owner_dsn, str(world.client_id), user, email_enabled=True)
+    _break_after_the_flag(monkeypatch, breaker)
+    outbox_id = _outbox(world, user)
+    with structlog.testing.capture_logs() as logs:
+        await record_person_failure(world.pool, _outbox_delivering(world, outbox_id), "smtp_error")
+    assert world.q("SELECT status FROM console_email_outbox WHERE id=%s", outbox_id) == [("dead",)]
+    assert _person_flag(world, user) is None
+    assert _notices(world, "notify.email_failed") == []
+    events = [entry for entry in logs if entry["event"] == "person_failure_report_failed"]
+    assert len(events) == 1 and events[0]["user_id"] == user
+
+
+@_BREAKERS
+async def test_the_transaction_is_usable_after_a_failing_hook(
+    world: World,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    breaker: Any,
+) -> None:
+    """The caller's transaction is not left aborted: later statements run and its work commits."""
+    _person(world, role="tenant_admin")
+    user = uuid.UUID(_person(world))
+    _prefs(world.owner_dsn, str(world.client_id), str(user), email_enabled=True)
+    _break_after_the_flag(monkeypatch, breaker)
+    target_id = _target(world)
+    with structlog.testing.capture_logs():
+        async with tx(world.pool, str(world.client_id)) as conn:
+            await failures.report_dead_target_safely(conn, world.client_id, target_id)
+            await failures.report_dead_person_email_safely(conn, world.client_id, user)
+            assert (await (await conn.execute("SELECT 1 AS one")).fetchone()) == {"one": 1}
+            await conn.execute(
+                "UPDATE staff_notification_targets SET version = 41 WHERE id=%s", (target_id,)
+            )
+    assert world.q("SELECT version FROM staff_notification_targets WHERE id=%s", target_id) == [
+        (41,)
+    ]
+    assert _flag(world, target_id) is None and _person_flag(world, str(user)) is None
