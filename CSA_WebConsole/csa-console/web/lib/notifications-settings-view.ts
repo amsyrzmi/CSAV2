@@ -236,3 +236,10 @@ export function validateTiming(values: Partial<Record<TimingKey, unknown>>): Par
   }
   return errors;
 }
+
+/**
+ * The sentence for a save that lost a race (409 `version_conflict`). The page has already read the
+ * latest by then, so it says so, instead of the generic "Reload to see the latest".
+ */
+export const SAVE_CONFLICT =
+  "Someone else changed this, so your change was not saved. The latest is shown; check it and save again.";

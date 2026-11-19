@@ -64,7 +64,7 @@ def test_no_message_text_for_any_kind(kind: str) -> None:
 
 @pytest.mark.parametrize("base", [BASE, BASE + "/"])
 def test_links_use_base_url(base: str) -> None:
-    want = f"{BASE}/inbox?conversation={CONVERSATION}"
+    want = f"{BASE}/portal/inbox?conversation={CONVERSATION}"
     link = {"route": "inbox", "conversation": CONVERSATION}
     person = render_person_email("inbox.overdue", {"customer": "Aisha"}, link, base)
     assert want in person.text and want in person.html
@@ -72,7 +72,7 @@ def test_links_use_base_url(base: str) -> None:
         "inbox.overdue", "high", {"conversation_id": CONVERSATION}, "en", base
     )
     assert want in target.text and want in target.html
-    assert "//inbox" not in _everything(person) + _everything(target)
+    assert "//portal/inbox" not in _everything(person) + _everything(target)
     page = render_person_email("inbox.assigned", {}, {"route": "notifications"}, base)
     assert f"{BASE}/portal/notifications" in page.text
     odd = render_person_email("inbox.assigned", {}, {"route": "elsewhere"}, base)
@@ -132,7 +132,7 @@ def test_all_kinds_render(kind: str) -> None:
     link = {"route": "inbox", "conversation": CONVERSATION}
     mail = render_person_email(kind, params, link, BASE)
     assert mail.subject and "Aisha" in mail.text and "Aisha" in mail.html
-    assert f"{BASE}/inbox?conversation={CONVERSATION}" in mail.html
+    assert f"{BASE}/portal/inbox?conversation={CONVERSATION}" in mail.html
     assert "\n" not in mail.subject
     assert kind not in _everything(mail)
 
@@ -172,6 +172,59 @@ def test_target_email_content() -> None:
     assert "Aisha" in order.text
     approval = render_target_email("approval_needed", "high", {"approval_id": "a1"}, "en", BASE)
     assert "AI reply needs approval" in approval.subject
+
+
+SENTENCE = "Please call me back about my broken order tomorrow"
+
+
+LABELS = {
+    "en": {"order_id": "Order", "ticket_id": "Ticket", "agent": "Agent", "stage": "Stage"},
+    "ms": {"order_id": "Pesanan", "ticket_id": "Tiket", "agent": "Ejen", "stage": "Peringkat"},
+}
+
+
+@pytest.mark.parametrize("key", ["order_id", "ticket_id", "agent", "stage"])
+@pytest.mark.parametrize("language", ["en", "ms"])
+def test_extra_lines_take_ids_only_never_a_sentence(key: str, language: str) -> None:
+    label = f"{LABELS[language][key]}:"
+    for bad in (SENTENCE, "ORD 9", "a" * 65, "x;drop", "<b>1</b>", "id\nBcc: x", "", "  "):
+        mail = render_target_email(
+            "order_submitted", "normal", {"customer": "Aisha", key: bad}, language, BASE
+        )
+        assert label not in mail.text, (bad, mail.text)
+        assert SENTENCE not in _everything(mail)
+    good = render_target_email("order_submitted", "normal", {key: "ORD-9_a.b:c"}, language, BASE)
+    assert f"{label} ORD-9_a.b:c" in good.text
+    number = render_target_email("order_submitted", "normal", {key: 42}, language, BASE)
+    assert f"{label} 42" in number.text
+
+
+def test_overdue_priority_is_one_of_the_four_words() -> None:
+    payload = {"customer": "Aisha", "waited_minutes": 5, "priority": SENTENCE}
+    mail = render_target_email("inbox.overdue", "high", payload, "en", BASE)
+    assert SENTENCE not in _everything(mail)
+    assert "Priority: high." in mail.text  # falls back to the notification's own priority
+    ms = render_target_email(
+        "inbox.overdue", "urgent", {**payload, "priority": "URGENT"}, "ms", BASE
+    )
+    assert "Keutamaan: segera." in ms.text
+    junk = render_target_email("inbox.overdue", SENTENCE, payload, "en", BASE)
+    assert SENTENCE not in _everything(junk) and "Priority: normal." in junk.text
+    other = render_target_email("escalation", SENTENCE, {"customer": "Aisha"}, "en", BASE)
+    assert SENTENCE not in _everything(other) and "Priority" not in other.text
+
+
+def test_conversation_links_use_the_portal_path() -> None:
+    """Tenant members are redirected away from /inbox, so the link is /portal/inbox."""
+    target = render_target_email(
+        "inbox.overdue", "high", {"conversation_id": CONVERSATION}, "en", BASE
+    )
+    person = render_person_email(
+        "inbox.assigned", {}, {"route": "inbox", "conversation": CONVERSATION}, BASE
+    )
+    for mail in (target, person):
+        assert f"{BASE}/portal/inbox?conversation={CONVERSATION}" in mail.text
+        assert f"{BASE}/inbox?" not in _everything(mail)
 
 
 def test_test_email() -> None:

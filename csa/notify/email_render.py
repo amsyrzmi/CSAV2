@@ -33,9 +33,10 @@ from csa.notify.format import (
 )
 
 MAX_SUBJECT_CHARS = 200
-_MAX_VALUE_CHARS = 80
 _BRAND = "FourStacks"
 _UUID = re.compile(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}", re.I)
+# An id or a code word, never a sentence: no spaces, no punctuation beyond these.
+_ID_SHAPED = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 _BODY = ";".join(
     (
         "margin:0",
@@ -133,10 +134,22 @@ def _name(value: object) -> str | None:
 
 
 def _short(value: object) -> str | None:
-    """A string or whole number from the payload, on one line and short; anything else is None."""
+    """An id-shaped string or whole number from the payload; anything else (free text) is None.
+
+    The extra lines may carry ids and code words only. A value with a space or punctuation outside
+    ``[A-Za-z0-9_.:-]``, or longer than 64 characters, could be a customer's sentence, so it is
+    left out.
+    """
     if isinstance(value, bool) or not isinstance(value, str | int):
         return None
-    return _one_line(str(value), _MAX_VALUE_CHARS) or None
+    text = str(value).strip()
+    return text if _ID_SHAPED.fullmatch(text) else None
+
+
+def _priority(value: object) -> str:
+    """One of the four priority words, lower case, or "" for anything else."""
+    level = _one_line(value).lower() if isinstance(value, str) else ""
+    return level if level in _PRIORITY_WORDS["en"] else ""
 
 
 def _base(base_url: object) -> str:
@@ -145,7 +158,8 @@ def _base(base_url: object) -> str:
 
 def _conversation_url(base_url: str, conversation: object) -> str | None:
     if isinstance(conversation, str) and _UUID.fullmatch(conversation):
-        return f"{_base(base_url)}/inbox?conversation={conversation}"
+        # The portal path: tenant members are redirected away from /inbox, which drops the query.
+        return f"{_base(base_url)}/portal/inbox?conversation={conversation}"
     return None
 
 
@@ -220,16 +234,17 @@ def render_target_email(
     if event == "approval_needed" and data.get("approval_id"):
         headline = _REPLY_APPROVAL_HEADLINE[lang]
     customer = _name(data.get("customer"))
-    shown = priority if isinstance(priority, str) else ""
+    shown = _priority(priority)
     if event == INBOX_OVERDUE:
-        lines = _overdue_lines(shown, data, lang)
+        # The payload's priority is printed by the shared overdue lines: only a known word gets in.
+        known_level = _priority(data.get("priority"))
+        lines = _overdue_lines(shown or "normal", {**data, "priority": known_level}, lang)
     else:
         lines = []
         if customer:
             lines.append(f"{words['customer']}: {customer}")
-        level = _one_line(shown, 20).lower()
-        if level:
-            lines.append(f"{words['priority']}: {_PRIORITY_WORDS[lang].get(level, level)}")
+        if shown:
+            lines.append(f"{words['priority']}: {_PRIORITY_WORDS[lang][shown]}")
         for key in _EXTRA_KEYS:
             value = _short(data.get(key))
             if value:

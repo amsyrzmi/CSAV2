@@ -541,13 +541,11 @@ async def test_still_overdue_true_only_for_the_same_wait(world: World) -> None: 
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda p: {k: v for k, v in p.items() if k != "cycle"},
         lambda p: {k: v for k, v in p.items() if k != "conversation_id"},
         lambda p: {**p, "conversation_id": "not-a-uuid"},
         lambda p: {**p, "conversation_id": None},
         lambda p: {**p, "conversation_id": 12},
         lambda p: {**p, "cycle": "yesterday"},
-        lambda p: {**p, "cycle": None},
         lambda p: {**p, "cycle": 1763500000},
         lambda p: {**p, "conversation_id": str(uuid.uuid4())},
         lambda p: {},
@@ -559,6 +557,46 @@ async def test_still_overdue_is_false_for_missing_or_bad_keys(
 ) -> None:
     s, cycle = _item(world)
     assert not await _ask(world, str(world.client_id), mutate(_payload(s, cycle)))
+
+
+@pytest.mark.parametrize("drop", [True, False])
+async def test_a_payload_without_a_cycle_is_checked_on_needs_staff_alone(
+    world: World,  # noqa: F811
+    drop: bool,
+) -> None:
+    """Alerts queued before the payload carried a cycle fail open: still Needs us, still sent."""
+    s, cycle = _item(world)
+    payload = _payload(s, cycle)
+    if drop:
+        del payload["cycle"]
+    else:
+        payload["cycle"] = None
+    client = str(world.client_id)
+    assert await _ask(world, client, payload)
+    _new_cycle(world, s)  # a new wait does not matter without a cycle: it still needs staff
+    assert await _ask(world, client, payload)
+    await _resolve(world, s)
+    assert not await _ask(world, client, payload)
+
+
+@pytest.mark.parametrize("kind", SENDERS)
+async def test_a_released_alert_without_a_cycle_is_sent_while_the_item_needs_staff(
+    world: World,  # noqa: F811
+    owner_pool: Any,
+    kind: str,
+) -> None:
+    rig = Rig(world, owner_pool, kind)
+    s, cycle = _item(world)
+    payload = _payload(s, cycle)
+    del payload["cycle"]
+    notification_id = rig.row(payload, held=True)
+    assert await rig.sender(still_overdue)()
+    assert rig.sent == 1
+    assert rig.state(notification_id)["status"] == "delivered"
+    other = rig.row(payload, held=True)
+    await _resolve(world, s)
+    assert await rig.sender(still_overdue)()
+    assert rig.state(other)["status"] == "cancelled"
 
 
 async def test_still_overdue_never_sees_another_companys_conversation(

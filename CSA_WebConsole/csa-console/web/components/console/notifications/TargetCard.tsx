@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { AlertTriangle, BadgeCheck, CircleDashed } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import {
@@ -124,7 +124,19 @@ export default function TargetCard({ scope, target, offered, emailAvailable, zon
   const testing = useAction();
   const removing = useAction();
   const quietId = useId();
+  const confirmRef = useRef<HTMLDivElement>(null);
+  const removeRef = useRef<HTMLButtonElement>(null);
+  const backToRemove = useRef(false);
   const email = target.channel === "email";
+  // Keyboard focus follows the remove flow: into the confirm box when it opens, back to Remove
+  // when it closes without a removal (the button it replaced is a new element each time).
+  useEffect(() => {
+    if (confirming) confirmRef.current?.focus();
+    else if (backToRemove.current) {
+      backToRemove.current = false;
+      removeRef.current?.focus();
+    }
+  }, [confirming]);
   // A save (or a reload after a clash) moves the version: the form follows what is saved now.
   if (seen !== target.version) {
     setSeen(target.version);
@@ -176,7 +188,12 @@ export default function TargetCard({ scope, target, offered, emailAvailable, zon
       return true;
     });
     if (done) onRemoved(target.id);
-    else setConfirming(false);
+    else closeConfirm();
+  }
+
+  function closeConfirm() {
+    backToRemove.current = true;
+    setConfirming(false);
   }
 
   const events = offered.length ? offered : target.events;
@@ -268,18 +285,19 @@ export default function TargetCard({ scope, target, offered, emailAvailable, zon
                 onClick={() => void sendTest()}>Send test</button>
             )}
             {email && !confirming && (
-              <button type="button" className={secondary} aria-label={`Remove ${target.address_masked}`}
+              <button type="button" className={secondary} aria-label={`Remove ${target.address_masked}`} ref={removeRef}
                 data-testid={`target-remove-${target.id}`} onClick={() => setConfirming(true)}>Remove</button>
             )}
           </div>
           {email && confirming && (
             <div role="group" aria-label={`Remove ${target.address_masked}?`} data-testid={`target-confirm-${target.id}`}
-              className="space-y-3 rounded-[var(--fs-radius-control)] border border-[var(--fs-danger)]/30 bg-[var(--fs-danger-bg)] p-3">
+              ref={confirmRef} tabIndex={-1}
+              className="space-y-3 rounded-[var(--fs-radius-control)] border border-[var(--fs-danger)]/30 bg-[var(--fs-danger-bg)] p-3 focus:outline-3 focus:outline-offset-2 focus:outline-[color:var(--fs-focus)]">
               <p className="text-sm">Remove {target.address_masked}? Alerts will stop going to it.</p>
               <div className="flex flex-wrap gap-2">
                 <button type="button" className={action} disabled={removing.busy}
                   data-testid={`target-remove-confirm-${target.id}`} onClick={() => void remove()}>Yes, remove it</button>
-                <button type="button" className={secondary} onClick={() => setConfirming(false)}
+                <button type="button" className={secondary} onClick={closeConfirm}
                   data-testid={`target-remove-cancel-${target.id}`}>Keep it</button>
               </div>
             </div>

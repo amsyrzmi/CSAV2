@@ -271,3 +271,11 @@ test("validateTiming rejects anything that is not a whole number and reports eac
   const missing = validateTiming({});
   assert.equal(Object.keys(missing).length, 9, "a missing field is an error, not a pass");
 });
+
+test("the save-conflict sentence says the latest is already shown, not 'reload'", () => {
+  assert.equal(
+    view.SAVE_CONFLICT,
+    "Someone else changed this, so your change was not saved. The latest is shown; check it and save again.",
+  );
+  assert.equal(/reload/i.test(view.SAVE_CONFLICT), false);
+});

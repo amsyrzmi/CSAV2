@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - One PR, one migration `0626_inbox_delivery_settings.sql`; `EXPECTED_SCHEMA_VERSION` does NOT change (0626 is not the highest). Nothing else numbered 0626 to 0629 exists.
-- Email never contains customer message text. It may name the customer by display name and links to `PUBLIC_BASE_URL` + `/inbox?conversation=<id>` (or `/portal/notifications` for failure notices, which are bell only anyway).
+- Email never contains customer message text. It may name the customer by display name and links to `PUBLIC_BASE_URL` + `/portal/inbox?conversation=<id>` (tenant members are redirected away from `/inbox`, which drops the query) (or `/portal/notifications` for failure notices, which are bell only anyway).
 - Retry policy (both email paths): at most 5 attempts, delay `min(300, 2 ** max(attempts - 1, 0))` seconds, stale-claim reaper at 180 s as `csa/notify/sender.py`, then status `dead`. Delivery is at-least-once; an outbox row is unique per notification (no second row on replay).
 - Outbox rows store message key and parameters only: never rendered text, never an email address.
 - Language: console screens, bell and person email are English only. Target email and staff chat use the target's `language` (en or ms) through `csa.notify.format`.
@@ -92,7 +92,7 @@ Failure modes the spec implies that no task would test unless named. Each is pin
   - `render_test_email(language: str) -> RenderedEmail`.
 - The caller builds `csa.console.mailer.OutgoingMail`; this module imports nothing from `csa/console`.
 
-- [ ] **Step 1: Write failing tests.** `test_no_message_text_for_any_event` (payload carrying `text`, `message`, `body`, `last_message` keys with a sentinel string: the sentinel appears in no output for any event or kind), `test_links_use_base_url` (conversation link `https://console.example/inbox?conversation=<id>`; no double slash when `base_url` ends with `/`), `test_malay_target_email` (an en/ms pair differ and both contain the customer name), `test_hostile_display_name` (names `"A\r\nBcc: x@y"`, `"<script>alert(1)</script>"`, 2000 chars: `subject` has no `\r`/`\n` and is at most 200 chars; `html` contains the escaped form and no raw `<script>`), `test_unknown_event_gets_generic_mail` (no crash, no payload leak), `test_all_kinds_render`.
+- [ ] **Step 1: Write failing tests.** `test_no_message_text_for_any_event` (payload carrying `text`, `message`, `body`, `last_message` keys with a sentinel string: the sentinel appears in no output for any event or kind), `test_links_use_base_url` (conversation link `https://console.example/portal/inbox?conversation=<id>`; no double slash when `base_url` ends with `/`), `test_malay_target_email` (an en/ms pair differ and both contain the customer name), `test_hostile_display_name` (names `"A\r\nBcc: x@y"`, `"<script>alert(1)</script>"`, 2000 chars: `subject` has no `\r`/`\n` and is at most 200 chars; `html` contains the escaped form and no raw `<script>`), `test_unknown_event_gets_generic_mail` (no crash, no payload leak), `test_all_kinds_render`.
 - [ ] **Step 2: Run; expect FAIL.**
 - [ ] **Step 3: Implement** the three functions; subject truncation and one-line collapse reuse the idea of `csa/console/mail_templates._one_line`; HTML escapes every value; include a plain-text part.
 - [ ] **Step 4: Run; expect PASS.** `make lint` on the file (import-linter).

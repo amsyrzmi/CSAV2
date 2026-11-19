@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState, type ReactNode } from "react";
+import { useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   addEmailTarget,
   type NotificationTarget,
@@ -14,10 +14,11 @@ import { EMAIL_OFF } from "./MyNotificationsPanel";
 import TargetCard from "./TargetCard";
 import { browserZone } from "./zones";
 
-function AddEmail({ scope, emailAvailable, onAdded }: {
+function AddEmail({ scope, emailAvailable, onAdded, headingRef }: {
   scope: NotificationsScope;
   emailAvailable: boolean;
   onAdded: (target: NotificationTarget) => void;
+  headingRef: RefObject<HTMLHeadingElement | null>;
 }) {
   const [address, setAddress] = useState("");
   const [problem, setProblem] = useState("");
@@ -41,7 +42,9 @@ function AddEmail({ scope, emailAvailable, onAdded }: {
   return (
     <form className="space-y-3 border-t border-[color:var(--fs-border)] pt-5" data-testid="email-add"
       onSubmit={(event) => { event.preventDefault(); void add(); }}>
-      <h3 className="text-sm font-semibold">Add an email address</h3>
+      <h3 ref={headingRef} tabIndex={-1} className="text-sm font-semibold outline-none" data-testid="email-add-heading">
+        Add an email address
+      </h3>
       <div className="text-sm">
         <label htmlFor={addressId}>Email address</label>
         <div className="mt-1 flex flex-wrap gap-2">
@@ -67,6 +70,8 @@ function AddEmail({ scope, emailAvailable, onAdded }: {
 /** Where the company's alerts go: its Telegram staff chat and any email addresses. */
 export default function TargetsPanel({ scope, targets }: { scope: NotificationsScope; targets: Loaded<TargetsResponse> }) {
   const { data } = targets;
+  // A removed card takes the keyboard focus with it: it goes to the next stable spot, the add form.
+  const addHeading = useRef<HTMLHeadingElement>(null);
   let body: ReactNode;
   if (data) {
     const rows = data.targets;
@@ -85,12 +90,13 @@ export default function TargetsPanel({ scope, targets }: { scope: NotificationsS
               <TargetCard key={target.id} scope={scope} target={target} offered={offered}
                 emailAvailable={data.email_available} zone={zone} reload={targets.reload}
                 onChange={(saved) => put(rows.map((row) => (row.id === saved.id ? saved : row)))}
-                onRemoved={(id) => put(rows.filter((row) => row.id !== id))} />
+                onRemoved={(id) => { addHeading.current?.focus(); put(rows.filter((row) => row.id !== id)); }} />
             ))}
           </ul>
         )}
         {scope.canEdit && (
-          <AddEmail scope={scope} emailAvailable={data.email_available} onAdded={(created) => put([...rows, created])} />
+          <AddEmail scope={scope} emailAvailable={data.email_available} headingRef={addHeading}
+            onAdded={(created) => put([...rows, created])} />
         )}
       </div>
     );

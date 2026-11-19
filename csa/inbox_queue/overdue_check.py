@@ -8,7 +8,9 @@ the answer is no. The wiring (``apps/delivery`` and ``apps/worker``) injects thi
 
 The alert's payload carries the conversation id and its ``cycle``, the ISO time the wait began
 (the item's ``needs_staff_since``). The alert is true while the conversation (in this company) is
-still in the queue state ``needs_staff`` and that time is unchanged.
+still in the queue state ``needs_staff`` and that time is unchanged. An alert queued before the
+payload carried a ``cycle`` (no such key) is checked on ``needs_staff`` alone: it fails open, so an
+item that still needs staff is not silently dropped.
 """
 
 from __future__ import annotations
@@ -38,16 +40,19 @@ async def still_overdue(
 ) -> bool:
     """True only while the alert's conversation still needs staff on the wait the alert names.
 
-    False for a payload without a usable ``conversation_id`` or ``cycle``, a conversation that is
-    not in this company, or one that left ``needs_staff`` or started a new wait. Never raises for
-    an odd payload; a database error is the caller's to handle.
+    False for a payload without a usable ``conversation_id`` or with a ``cycle`` that is present
+    but not an ISO time, a conversation that is not in this company, or one that left
+    ``needs_staff`` or started a new wait. A payload with no ``cycle`` (or ``None``) is checked on
+    ``needs_staff`` alone. Never raises for an odd payload; a database error is the caller's to
+    handle.
     """
     try:
         conversation_id = UUID(str(payload.get("conversation_id")))
     except ValueError:
         return False
-    cycle = _cycle_time(payload.get("cycle"))
-    if cycle is None:
+    raw_cycle = payload.get("cycle")
+    cycle = _cycle_time(raw_cycle)
+    if cycle is None and raw_cycle is not None:
         return False
     row = await db.q.fetch_one(
         "inbox/overdue_still_open.sql",

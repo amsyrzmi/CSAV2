@@ -78,15 +78,18 @@ function Editor({ scope, timing, data }: { scope: NotificationsScope; timing: Lo
         {timingFields.map((item) => {
           const problem = errors[item.key];
           const hintId = `timing-hint-${item.key}`;
+          const unitId = `timing-unit-${item.key}`;
+          // The unit ("minutes") is read as part of the field's description, then any hint or error.
+          const describedBy = [unitWord(item) && unitId, (problem || item.zeroOff) && hintId].filter(Boolean).join(" ");
           return (
             <div key={item.key} className="min-w-0 text-sm">
               <label htmlFor={`timing-${item.key}`}>{item.label}</label>
               <span className="mt-1 flex flex-wrap items-center gap-2">
                 <input id={`timing-${item.key}`} className={`${input} w-28`} inputMode="numeric" data-testid={`timing-${item.key}`}
                   value={draft[item.key]} aria-invalid={problem ? true : undefined}
-                  aria-describedby={problem || item.zeroOff ? hintId : undefined}
+                  aria-describedby={describedBy || undefined}
                   onChange={(event) => { setDraft({ ...draft, [item.key]: event.target.value }); setSaved(false); }} />
-                {unitWord(item) && <span className={mutedText} aria-hidden="true">{unitWord(item)}</span>}
+                {unitWord(item) && <span id={unitId} className={mutedText} data-testid={unitId}>{unitWord(item)}</span>}
               </span>
               {(problem || item.zeroOff) && (
                 <span id={hintId} data-testid={problem ? `timing-error-${item.key}` : undefined}

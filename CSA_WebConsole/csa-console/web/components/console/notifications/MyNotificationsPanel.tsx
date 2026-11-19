@@ -20,8 +20,9 @@ function Editor({ data, replace, emailAvailable }: {
   const [saved, setSaved] = useState(false);
   const { busy, error, run } = useAction();
   const floorId = useId();
-  // Email can be turned off whenever it is on; it can be turned on only while the relay is.
-  const noRelay = emailAvailable === false && !enabled;
+  // Email can be turned off whenever it is on; it can be turned on only while the relay is. The
+  // switch is locked by what is saved, not by the box: unchecking and re-checking works.
+  const noRelay = emailAvailable === false && !data.email_enabled;
   const touch = () => setSaved(false);
 
   async function save() {

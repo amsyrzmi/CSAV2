@@ -9,7 +9,6 @@ because only a click makes one. A call the stub does not expect fails the test.
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import re
 from collections.abc import AsyncIterator, Callable
@@ -63,6 +62,11 @@ TIMING = {
 }
 ADMINS = {"tenant_admin", "platform_admin"}
 WRITES = ("PUT", "POST", "DELETE")
+# The page has already read the latest when a save loses a race, so it says so (no "Reload").
+CONFLICT = (
+    "Someone else changed this, so your change was not saved. "
+    "The latest is shown; check it and save again."
+)
 
 
 def target(target_id: str, channel: str, masked: str, **extra: Any) -> dict[str, Any]:
@@ -228,9 +232,9 @@ class World:
                 return 400, {"detail": "test_not_supported"}
             if not self.email_available:
                 return 503, {"detail": "email_not_configured"}
-            row.update(
-                verified=True, is_enabled=True, last_failure=None, version=row["version"] + 1
-            )
+            # The real route only verifies the address (and clears the failure flag): the version
+            # and is_enabled stay as they were.
+            row.update(verified=True, last_failure=None)
             return 200, row
         if method == "DELETE":
             if row["channel"] != "email":
@@ -305,14 +309,6 @@ async def with_browser(body: Callable[[Any], Any]) -> None:
             await body(browser)
         finally:
             await browser.close()
-
-
-async def eventually(check: Callable[[], bool], timeout: float = 10.0) -> None:
-    for _ in range(int(timeout / 0.05)):
-        if check():
-            return
-        await asyncio.sleep(0.05)
-    raise AssertionError("condition not met in time")
 
 
 async def ready(page: Page) -> None:
@@ -397,9 +393,7 @@ async def test_an_admin_edits_a_target_and_a_clash_reloads_what_is_saved(site: S
             world.clash_target = True
             await mine.get_by_test_id(f"target-min-{EMAIL}").select_option("low")
             await mine.get_by_test_id(f"target-save-{EMAIL}").click()
-            await expect(mine.get_by_test_id(f"target-error-{EMAIL}")).to_contain_text(
-                "Someone else changed this"
-            )
+            await expect(mine.get_by_test_id(f"target-error-{EMAIL}")).to_have_text(CONFLICT)
             await expect(mine.get_by_test_id(f"target-min-{EMAIL}")).to_have_value("urgent")
             await mine.get_by_test_id(f"target-min-{EMAIL}").select_option("normal")
             await mine.get_by_test_id(f"target-save-{EMAIL}").click()
@@ -486,7 +480,8 @@ async def test_send_test_verifies_the_address_and_remove_asks_first(site: Site) 
                 "Test email sent. This address is verified."
             )
             assert len(world.wrote("POST", f"notifications/targets/{UNVERIFIED}/test")) == 1
-            await expect(page.get_by_test_id(f"target-enabled-{UNVERIFIED}")).to_be_checked()
+            # Verifying does not switch the target on.
+            await expect(page.get_by_test_id(f"target-enabled-{UNVERIFIED}")).not_to_be_checked()
 
             # The Telegram chat can neither be tested nor removed here; it says where to change it.
             telegram = card(page, TELEGRAM)
@@ -506,13 +501,21 @@ async def test_send_test_verifies_the_address_and_remove_asks_first(site: Site) 
             await expect(confirm).to_contain_text(
                 "Remove u***@example.test? Alerts will stop going to it."
             )
+            # Keyboard focus moves into the confirm box, so the next Tab reaches "Yes, remove it".
+            await expect(confirm).to_be_focused()
+            await page.keyboard.press("Tab")
+            await expect(page.get_by_test_id(f"target-remove-confirm-{UNVERIFIED}")).to_be_focused()
             assert not world.wrote("DELETE", f"notifications/targets/{UNVERIFIED}")
             await confirm.get_by_test_id(f"target-remove-cancel-{UNVERIFIED}").click()
             await expect(confirm).to_have_count(0)
+            # "Keep it" returns focus to the Remove button it replaced.
+            await expect(page.get_by_test_id(f"target-remove-{UNVERIFIED}")).to_be_focused()
             assert not world.wrote("DELETE", f"notifications/targets/{UNVERIFIED}")
             await page.get_by_role("button", name="Remove u***@example.test").click()
             await page.get_by_test_id(f"target-remove-confirm-{UNVERIFIED}").click()
             await expect(card(page, UNVERIFIED)).to_have_count(0)
+            # After the removal focus is on a stable spot, not lost to the page body.
+            await expect(page.get_by_test_id("email-add-heading")).to_be_focused()
             assert len(world.wrote("DELETE", f"notifications/targets/{UNVERIFIED}")) == 1
 
     await with_browser(body)
@@ -636,6 +639,17 @@ async def test_the_inbox_timing_validates_saves_and_reloads_after_a_clash(site: 
             for key in ("follow_up_hours", "stale_claim_hours", "handback_prompt_hours"):
                 await expect(page.locator(f"#timing-hint-{key}")).to_have_text("0 turns it off")
             await expect(page.locator("#timing-hint-target_urgent_min")).to_have_count(0)
+            # The unit is part of each field's description: "minutes" or "hours", then any hint.
+            await expect(page.get_by_test_id("timing-target_urgent_min")).to_have_attribute(
+                "aria-describedby", "timing-unit-target_urgent_min"
+            )
+            await expect(page.get_by_test_id("timing-follow_up_hours")).to_have_attribute(
+                "aria-describedby", "timing-unit-follow_up_hours timing-hint-follow_up_hours"
+            )
+            await expect(page.get_by_test_id("timing-unit-follow_up_hours")).to_have_text("hours")
+            await expect(page.get_by_test_id("timing-max_repeats")).not_to_have_attribute(
+                "aria-describedby", re.compile(".")
+            )
             await page.get_by_test_id("timing-target_urgent_min").fill("3")
             await page.get_by_test_id("timing-save").click()
             await expect(page.get_by_test_id("timing-error-target_urgent_min")).to_have_text(
@@ -655,9 +669,7 @@ async def test_the_inbox_timing_validates_saves_and_reloads_after_a_clash(site: 
             world.clash_timing = True
             await page.get_by_test_id("timing-repeat_minutes").fill("90")
             await page.get_by_test_id("timing-save").click()
-            await expect(page.get_by_test_id("timing-error")).to_contain_text(
-                "Someone else changed this"
-            )
+            await expect(page.get_by_test_id("timing-error")).to_have_text(CONFLICT)
             await expect(page.get_by_test_id("timing-target_urgent_min")).to_have_value("20")
             await expect(page.get_by_test_id("timing-repeat_minutes")).to_have_value("60")
             await page.get_by_test_id("timing-save").click()
@@ -695,6 +707,35 @@ async def test_without_a_mail_relay_only_the_email_controls_are_off(site: Site) 
             await page.get_by_test_id("my-kind-inbox.handback").uncheck()
             await page.get_by_test_id("my-save").click()
             await expect(page.get_by_test_id("my-notice")).to_have_text("Saved.")
+
+    await with_browser(body)
+
+
+async def test_with_email_on_and_no_relay_the_switch_can_be_unchecked_and_rechecked(
+    site: Site,
+) -> None:
+    async def body(browser: Any) -> None:
+        world = World(site.upstream)
+        world.email_available = False
+        world.prefs["email_enabled"] = True  # saved on, then the relay went away
+        async with notifications_page(browser, site, world) as page:
+            await ready(page)
+            switch = page.get_by_test_id("my-email")
+            await expect(switch).to_be_checked()
+            await expect(switch).to_be_enabled()
+            await expect(page.get_by_test_id("my-email-off")).to_have_count(0)
+            await switch.uncheck()
+            # Locked by what is saved, not by the box: it can be switched back on before saving.
+            await expect(switch).not_to_be_checked()
+            await expect(switch).to_be_enabled()
+            await switch.check()
+            await expect(switch).to_be_checked()
+            await switch.uncheck()
+            await page.get_by_test_id("my-save").click()
+            await expect(page.get_by_test_id("my-notice")).to_have_text("Saved.")
+            # Saved off, with no relay: now it cannot be turned on.
+            await expect(switch).to_be_disabled()
+            await expect(page.get_by_test_id("my-email-off")).to_be_visible()
 
     await with_browser(body)
 

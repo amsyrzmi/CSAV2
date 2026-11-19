@@ -150,6 +150,26 @@ async def test_params_carry_no_address(world: World) -> None:  # noqa: F811
     assert address not in str(_notices(world, "notify.target_failed"))
 
 
+async def test_a_disabled_target_raises_no_notice_and_an_enabled_one_still_does(
+    world: World,  # noqa: F811
+) -> None:
+    """Rows queued for a target that is switched off die quietly; the admins asked for that."""
+    _person(world, role="tenant_admin")
+    off = _target(world)
+    queued = _row(world, off)
+    with psycopg.connect(world.owner_dsn, autocommit=True) as conn:
+        conn.execute("UPDATE staff_notification_targets SET is_enabled = false WHERE id=%s", (off,))
+    await record_failure(world.pool, _delivering(world, queued), "target_unavailable", None)
+    assert world.q("SELECT status FROM staff_notifications WHERE id=%s", queued) == [("dead",)]
+    assert _notices(world, "notify.target_failed") == []
+    assert _flag(world, off) is None
+    on = _target(world)
+    await _kill(world, on)
+    rows = _notices(world, "notify.target_failed")
+    assert len(rows) == 1 and rows[0][3]["target_id"] == str(on)
+    assert _flag(world, on) is not None
+
+
 async def test_success_clears_flag_so_next_failure_notifies_again(
     world: World,  # noqa: F811
     owner_pool: Any,  # noqa: F811

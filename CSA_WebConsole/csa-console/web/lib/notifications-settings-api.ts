@@ -1,4 +1,5 @@
-import { api, del, post } from "./api";
+import { api, ApiError, del, post } from "./api";
+import { SAVE_CONFLICT } from "./notifications-settings-view";
 import { settingsPath } from "./inbox-api";
 import type { InboxSettings } from "./inbox-api";
 
@@ -82,6 +83,18 @@ export function notificationsPath(tenantId: string | null, rest = ""): string {
   return `${BASE}${rest}${query.size ? `?${query}` : ""}`;
 }
 
+/** This page reloads on a 409 itself, so its sentence says the latest is already shown. */
+async function savedOrConflict<T>(request: Promise<T>): Promise<T> {
+  try {
+    return await request;
+  } catch (cause) {
+    if (cause instanceof ApiError && cause.status === 409 && cause.code === "version_conflict") {
+      throw new ApiError(409, SAVE_CONFLICT, "version_conflict", cause.body);
+    }
+    throw cause;
+  }
+}
+
 const id = (value: string) => `/${encodeURIComponent(value)}`;
 
 /** Any member may read the targets. */
@@ -95,10 +108,12 @@ export function saveTarget(
   targetId: string,
   body: TargetSettingsIn,
 ): Promise<NotificationTarget> {
-  return api(notificationsPath(tenantId, `/targets/${encodeURIComponent(targetId)}`), {
-    method: "PUT",
-    body: JSON.stringify(body),
-  });
+  return savedOrConflict(
+    api<NotificationTarget>(notificationsPath(tenantId, `/targets/${encodeURIComponent(targetId)}`), {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  );
 }
 
 /** Admins only. Sends a test mail first; 502 `email_test_failed` saves nothing. */
@@ -135,8 +150,10 @@ export function getInboxSettings(tenantId: string | null, signal?: AbortSignal):
 
 /** Admins only. Send the nine values and the version read (see `settingsBody`); 409 for a stale one. */
 export function saveInboxSettings(tenantId: string | null, body: InboxSettings): Promise<InboxSettings> {
-  return api(settingsPath(tenantId ? `client_id=${encodeURIComponent(tenantId)}` : ""), {
-    method: "PUT",
-    body: JSON.stringify(body),
-  });
+  return savedOrConflict(
+    api<InboxSettings>(settingsPath(tenantId ? `client_id=${encodeURIComponent(tenantId)}` : ""), {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  );
 }
