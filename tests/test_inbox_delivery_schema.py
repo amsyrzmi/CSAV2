@@ -299,7 +299,7 @@ def test_member_emails_function(migrated_dsn: str, app_dsn: str) -> None:
             ).fetchall()
             == []
         )
-    # Another company's person is never returned, whoever asks and whatever is named.
+    # Another company's person is never returned when the session's own company is asked about.
     with _app(app_dsn, c) as conn:
         assert (
             conn.execute(
@@ -307,6 +307,13 @@ def test_member_emails_function(migrated_dsn: str, app_dsn: str) -> None:
             ).fetchall()
             == []
         )
+    # A session can only ask about the company it works in: another company's id, no company
+    # setting and a NULL company are all refused, even naming that company's real members.
+    for setting, asked_company in ((other, c), (c, other), (None, c), (c, None)):
+        with _app(app_dsn, setting) as conn, pytest.raises(errors.InsufficientPrivilege):
+            conn.execute(
+                "SELECT * FROM console_member_emails(%s, %s::uuid[])", (asked_company, [admin])
+            ).fetchall()
     with _owner(migrated_dsn) as conn:
         [proc] = conn.execute(
             "SELECT prosecdef, proconfig, prorettype::regtype::text AS ret"
@@ -314,7 +321,7 @@ def test_member_emails_function(migrated_dsn: str, app_dsn: str) -> None:
             (FUNCTION,),
         )
         assert proc["prosecdef"] is True
-        assert proc["proconfig"] == ["search_path=public, pg_catalog"]
+        assert proc["proconfig"] == ["search_path=pg_catalog, public, pg_temp"]
         for role, wanted in {
             "csa_app": True,
             "csa_ro": False,

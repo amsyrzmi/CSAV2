@@ -13,7 +13,9 @@
 --              notification purge is unaffected), kind, priority, message_key, params and link (ids
 --              and keys only, never a customer message), status (pending, delivering, delivered,
 --              dead), attempts, next_attempt_at, locked_at, last_error, delivered_at, created_at.
---              Index (status, next_attempt_at) serves the due scan.
+--              Index (status, next_attempt_at) serves the due scan. user_id deliberately has no
+--              membership foreign key: the sender treats "no address returned for this user" as
+--              terminal (a person removed from the company is not retried).
 --   staff_notification_targets.failure_notified_at  timestamptz, NULL: the once-per-episode flag of a
 --              dead target.
 --   staff_notification_targets.version  int NOT NULL DEFAULT 0: the optimistic-lock counter the API
@@ -26,8 +28,11 @@
 --              sign-in email of each enabled member of p_client_id among p_user_ids (account enabled,
 --              not a platform admin; any role, a read_only member reads their own). SECURITY
 --              DEFINER because the worker and the gateway app role cannot read console_users or
---              console_memberships; search_path pinned; EXECUTE to csa_app only. Another company's
---              person is never returned: the membership join is on p_client_id.
+--              console_memberships; search_path pinned; EXECUTE to csa_app only. Like the 0624
+--              functions it refuses a p_client_id that is NULL or other than app.client_id
+--              (inbox_recipients_unavailable, 42501), so a session can only ask about the company
+--              it is working in, and the membership join is on p_client_id, so another company's
+--              person is never returned.
 -- Row security: the usual tenant_isolation policy on both new tables, ENABLE and no FORCE, explicit
 --   grants (csa_ro reads; csa_app SELECT, INSERT, UPDATE and DELETE). The three added columns need
 --   neither.
@@ -148,17 +153,22 @@ BEGIN
   END IF;
 END $$;
 
--- The sign-in email of the enabled members of one company among the people asked for.
+-- The sign-in email of the enabled members of the transaction's company among the people asked for.
 CREATE OR REPLACE FUNCTION public.console_member_emails(p_client_id uuid, p_user_ids uuid[])
 RETURNS TABLE (user_id uuid, email text)
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_catalog AS $$
-  SELECT u.id, u.email
-    FROM public.console_memberships m
-    JOIN public.console_users u ON u.id = m.user_id AND u.is_enabled AND NOT u.is_platform_admin
-   WHERE m.client_id = p_client_id AND m.is_enabled
-     AND m.user_id = ANY (coalesce(p_user_ids, '{}'::uuid[]))
-   ORDER BY u.id
-$$;
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
+BEGIN
+ IF p_client_id IS NULL
+    OR p_client_id IS DISTINCT FROM nullif(current_setting('app.client_id',true),'')::uuid THEN
+  RAISE EXCEPTION 'inbox_recipients_unavailable' USING ERRCODE='42501'; END IF;
+ RETURN QUERY
+ SELECT u.id, u.email
+   FROM public.console_memberships m
+   JOIN public.console_users u ON u.id = m.user_id AND u.is_enabled AND NOT u.is_platform_admin
+  WHERE m.client_id = p_client_id AND m.is_enabled
+    AND m.user_id = ANY (coalesce(p_user_ids, '{}'::uuid[]))
+  ORDER BY u.id;
+END $$;
 
 REVOKE ALL ON FUNCTION public.console_member_emails(uuid, uuid[])
     FROM PUBLIC, csa_ro, csa_identity, csa_hr_maintenance;
