@@ -6969,6 +6969,60 @@
         "title": "EmailInput",
         "type": "object"
       },
+      "EmailTargetIn": {
+        "additionalProperties": false,
+        "description": "A new email target; what is left out takes the defaults of a Telegram chat.",
+        "properties": {
+          "address": {
+            "maxLength": 318,
+            "title": "Address",
+            "type": "string"
+          },
+          "events": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 14,
+            "title": "Events",
+            "type": "array"
+          },
+          "language": {
+            "default": "en",
+            "enum": [
+              "en",
+              "ms"
+            ],
+            "title": "Language",
+            "type": "string"
+          },
+          "min_priority": {
+            "default": "normal",
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ],
+            "title": "Min Priority",
+            "type": "string"
+          },
+          "quiet_hours": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuietHours"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "address"
+        ],
+        "title": "EmailTargetIn",
+        "type": "object"
+      },
       "EmployeeRef": {
         "additionalProperties": false,
         "properties": {
@@ -11460,6 +11514,26 @@
         "title": "LastChange",
         "type": "object"
       },
+      "LastFailure": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "at",
+          "attempts"
+        ],
+        "title": "LastFailure",
+        "type": "object"
+      },
       "LeaveBalanceSave": {
         "additionalProperties": false,
         "properties": {
@@ -15935,6 +16009,76 @@
         "title": "PlaybackOut",
         "type": "object"
       },
+      "PreferencesIn": {
+        "additionalProperties": false,
+        "description": "The person's own email preferences: on or off, which of the six kinds, the priority floor.",
+        "properties": {
+          "email_enabled": {
+            "title": "Email Enabled",
+            "type": "boolean"
+          },
+          "kinds": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Kinds",
+            "type": "array"
+          },
+          "min_priority": {
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ],
+            "title": "Min Priority",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email_enabled",
+          "kinds",
+          "min_priority"
+        ],
+        "title": "PreferencesIn",
+        "type": "object"
+      },
+      "PreferencesOut": {
+        "additionalProperties": false,
+        "description": "The preferences as stored, or the defaults (email off) while none are saved.",
+        "properties": {
+          "email_enabled": {
+            "title": "Email Enabled",
+            "type": "boolean"
+          },
+          "kinds": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Kinds",
+            "type": "array"
+          },
+          "min_priority": {
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ],
+            "title": "Min Priority",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email_enabled",
+          "kinds",
+          "min_priority"
+        ],
+        "title": "PreferencesOut",
+        "type": "object"
+      },
       "PrivateAccessSave": {
         "additionalProperties": false,
         "properties": {
@@ -17573,6 +17717,33 @@
           "duplicate"
         ],
         "title": "QueuedTurn",
+        "type": "object"
+      },
+      "QuietHours": {
+        "additionalProperties": false,
+        "description": "A daily window in which only urgent notifications are sent; it may cross midnight.",
+        "properties": {
+          "end": {
+            "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+            "title": "Start",
+            "type": "string"
+          },
+          "tz": {
+            "title": "Tz",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "tz"
+        ],
+        "title": "QuietHours",
         "type": "object"
       },
       "Receipt": {
@@ -19880,6 +20051,191 @@
           }
         },
         "title": "SuspendIn",
+        "type": "object"
+      },
+      "TargetIn": {
+        "additionalProperties": false,
+        "description": "A target's settings, replaced as a whole. ``version`` is the one last read.",
+        "properties": {
+          "events": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 14,
+            "title": "Events",
+            "type": "array"
+          },
+          "is_enabled": {
+            "title": "Is Enabled",
+            "type": "boolean"
+          },
+          "language": {
+            "enum": [
+              "en",
+              "ms"
+            ],
+            "title": "Language",
+            "type": "string"
+          },
+          "min_priority": {
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ],
+            "title": "Min Priority",
+            "type": "string"
+          },
+          "quiet_hours": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuietHours"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "minimum": 0.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "events",
+          "min_priority",
+          "quiet_hours",
+          "language",
+          "is_enabled",
+          "version"
+        ],
+        "title": "TargetIn",
+        "type": "object"
+      },
+      "TargetList": {
+        "additionalProperties": false,
+        "properties": {
+          "email_available": {
+            "title": "Email Available",
+            "type": "boolean"
+          },
+          "events_offered": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Events Offered",
+            "type": "array"
+          },
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/TargetOut"
+            },
+            "title": "Targets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "targets",
+          "email_available",
+          "events_offered"
+        ],
+        "title": "TargetList",
+        "type": "object"
+      },
+      "TargetOut": {
+        "additionalProperties": false,
+        "properties": {
+          "address_masked": {
+            "title": "Address Masked",
+            "type": "string"
+          },
+          "channel": {
+            "enum": [
+              "telegram",
+              "email"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "events": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_enabled": {
+            "title": "Is Enabled",
+            "type": "boolean"
+          },
+          "language": {
+            "enum": [
+              "en",
+              "ms"
+            ],
+            "title": "Language",
+            "type": "string"
+          },
+          "last_failure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LastFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "min_priority": {
+            "enum": [
+              "low",
+              "normal",
+              "high",
+              "urgent"
+            ],
+            "title": "Min Priority",
+            "type": "string"
+          },
+          "quiet_hours": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuietHours"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "channel",
+          "address_masked",
+          "events",
+          "min_priority",
+          "quiet_hours",
+          "language",
+          "is_enabled",
+          "verified",
+          "version",
+          "last_failure"
+        ],
+        "title": "TargetOut",
         "type": "object"
       },
       "TaskApprove": {
@@ -40622,6 +40978,150 @@
         ]
       }
     },
+    "/console/v1/notifications/preferences": {
+      "get": {
+        "description": "The signed-in member's own email preferences; defaults (email off) until they save.",
+        "operationId": "get_preferences_console_v1_notifications_preferences_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferencesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Preferences",
+        "tags": [
+          "notifications"
+        ]
+      },
+      "put": {
+        "description": "Save the member's own preferences (last write wins).\n\nTurning email on needs the relay (503 `email_not_configured`), turning it off does not.",
+        "operationId": "put_preferences_console_v1_notifications_preferences_put",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreferencesIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferencesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Preferences",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
     "/console/v1/notifications/read": {
       "post": {
         "description": "Mark the caller's notifications read, by ``ids`` or all; others' ids are ignored.",
@@ -40695,6 +41195,387 @@
           }
         },
         "summary": "Mark Notifications Read",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/console/v1/notifications/targets": {
+      "get": {
+        "description": "The company's Telegram chat and email targets; any member may read.",
+        "operationId": "list_targets_console_v1_notifications_targets_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Targets",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/console/v1/notifications/targets/email": {
+      "post": {
+        "description": "Add an email target after a delivered test mail.\n\nA relay refusal is 502 `email_test_failed` and nothing is saved.",
+        "operationId": "add_email_target_console_v1_notifications_targets_email_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailTargetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Email Target",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/console/v1/notifications/targets/{target_id}": {
+      "delete": {
+        "description": "Remove an email target; the Telegram chat cannot be removed here (400).",
+        "operationId": "remove_target_console_v1_notifications_targets__target_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Target Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Target",
+        "tags": [
+          "notifications"
+        ]
+      },
+      "put": {
+        "description": "Replace a target's settings; 409 `version_conflict` unless `version` is the one read.",
+        "operationId": "update_target_console_v1_notifications_targets__target_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Target Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TargetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Target",
+        "tags": [
+          "notifications"
+        ]
+      }
+    },
+    "/console/v1/notifications/targets/{target_id}/test": {
+      "post": {
+        "description": "Send a test mail to an email target.\n\nDelivered, it verifies the target and clears its failure flag. Telegram is 400.",
+        "operationId": "test_target_console_v1_notifications_targets__target_id__test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Target Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-client-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Target",
         "tags": [
           "notifications"
         ]
