@@ -388,7 +388,8 @@ overdue ("what is overdue", "is anything running late", "tugasan yang tertunggak
 Give person only with person_process.
 - hr_task_complete: mark one of the user's own process steps done ("mark my task done", \
 "tandakan tugasan saya sebagai selesai"); task is words of the step's title only when the \
-user named one, or the option value they picked.
+user named one, or the option value they picked. When no step is named, still use this \
+action and leave task out; the server asks which step.
 - booking_action: change is "book", "move" or "cancel". To book give booking_type (a booking \
 type's name), or title and minutes for a meeting; day and time; and people (names), rooms (names) \
 or include_me for "me"; customer is a customer's name. To move or cancel a booking say which: \
