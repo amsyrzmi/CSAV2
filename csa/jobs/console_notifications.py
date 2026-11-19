@@ -1,5 +1,6 @@
 """The console_notifications_purge job: a company's console notifications older than 30 days are
-deleted, read or not (plan 2a, task 7; design 8).
+deleted, read or not (plan 2a, task 7; design 8), and so are its person email outbox rows older
+than 30 days (inbox refinement part 3).
 
 Runs every six hours per company on the app pool (``Job.own_transactions``): each batch of
 ``batch_size`` rows is its own company transaction, committed before the next, and at most
@@ -10,7 +11,7 @@ The cutoff comes from the job clock, so a test moves it with a ``FakeClock``.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from psycopg_pool import AsyncConnectionPool
@@ -30,18 +31,32 @@ async def run_console_notifications_purge(
     *,
     batch_size: int = 1000,
 ) -> dict[str, int]:
-    """Delete the company's console notifications created more than 30 days ago."""
+    """Delete the company's console notifications and email outbox rows created over 30 days ago.
+
+    ``purged`` counts the notifications, ``email_purged`` the outbox rows.
+    """
     cutoff = clock.now() - RETENTION
-    purged = 0
+    purged = await _purge(
+        app_pool, client_id, "notify/purge_console_notifications.sql", cutoff, batch_size
+    )
+    email_purged = await _purge(
+        app_pool, client_id, "notify/purge_email_outbox.sql", cutoff, batch_size
+    )
+    return {"purged": purged, "email_purged": email_purged}
+
+
+async def _purge(
+    app_pool: AsyncConnectionPool, client_id: UUID, sql: str, cutoff: datetime, batch_size: int
+) -> int:
+    """Run one batched delete: each batch its own company transaction, at most MAX_BATCHES."""
+    total = 0
     for _ in range(MAX_BATCHES):
         async with tx(app_pool, str(client_id)) as conn:
             row = await db.q.fetch_one(
-                "notify/purge_console_notifications.sql",
-                {"client_id": client_id, "cutoff": cutoff, "batch": batch_size},
-                conn=conn,
+                sql, {"client_id": client_id, "cutoff": cutoff, "batch": batch_size}, conn=conn
             )
         batch = row["purged"] if row else 0
-        purged += batch
+        total += batch
         if batch < batch_size:
             break
-    return {"purged": purged}
+    return total

@@ -158,7 +158,11 @@ export function NotificationPanel({
               >
                 {link ? (
                   <Link
-                    href={consoleHref(false, "inbox", { conversation: link.conversation })}
+                    href={
+                      link.route === "inbox"
+                        ? consoleHref(false, "inbox", { conversation: link.conversation })
+                        : consoleHref(false, "notifications")
+                    }
                     // A distinct ?conversation= per row would otherwise be prefetched in production.
                     prefetch={false}
                     onClick={(event) => {

@@ -93,6 +93,11 @@ function customerName(params: Record<string, unknown>): string | null {
   return name === "" ? null : name;
 }
 
+/** A count of delivery attempts, or null when it is not a positive whole number. */
+function attemptCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
 const GENERIC = {
   title: "New notification",
   detail: "Open the console to see the details.",
@@ -146,22 +151,43 @@ export function renderNotification(item: {
       };
     case "inbox.assigned":
       return { title: "Assigned to you", detail: `${who} was assigned to you.` };
+    case "notify.target_failed": {
+      const channel = params.channel === "email" ? "email" : params.channel === "telegram" ? "telegram" : null;
+      const tries = attemptCount(params.attempts);
+      const what = channel === "email" ? "Email" : channel === "telegram" ? "Telegram" : "Alerts";
+      const place = channel === "email" ? "address" : channel === "telegram" ? "staff chat" : "target";
+      return {
+        title: "A notification target stopped working",
+        detail:
+          `${what}${channel ? " alerts" : ""} could not be delivered${tries ? ` after ${plural(tries, "attempt")}` : ""}.` +
+          ` Check the ${place} on the Notifications page.`,
+      };
+    }
+    case "notify.email_failed": {
+      const tries = attemptCount(params.attempts);
+      const tried = tries === 1 ? "We tried once. " : tries ? `We tried ${tries} times. ` : "";
+      return {
+        title: "Your notification email could not be delivered",
+        detail: `${tried}Check your email settings on the Notifications page.`,
+      };
+    }
     default:
       return { ...GENERIC };
   }
 }
 
+export type NotificationLink = { route: "inbox"; conversation: string } | { route: "notifications" };
+
 /**
- * Where a notification opens: only the Inbox, and only for a UUID-shaped conversation id.
- * Anything else (another route, a missing or odd id, junk types) is null, and the row stays
- * plain text.
+ * Where a notification opens: the Inbox (only for a UUID-shaped conversation id) or the
+ * Notifications settings page. Anything else (another route, a missing or odd id, junk types) is
+ * null, and the row stays plain text.
  */
-export function notificationLink(item: {
-  link?: unknown;
-}): { route: "inbox"; conversation: string } | null {
+export function notificationLink(item: { link?: unknown }): NotificationLink | null {
   const link = item?.link;
   if (typeof link !== "object" || link === null || Array.isArray(link)) return null;
   const { route, conversation } = link as Record<string, unknown>;
+  if (route === "notifications") return { route: "notifications" };
   if (route !== "inbox") return null;
   if (typeof conversation !== "string" || !UUID_SHAPE.test(conversation)) return null;
   return { route: "inbox", conversation };

@@ -82,6 +82,10 @@ const OWNED = [
   "components/console/TrainingWorkspace.tsx",
   "lib/training-form.ts",
   "lib/training-viewer-logic.ts",
+  "components/console/notifications/",
+  "lib/notifications-settings-view.ts",
+  "app/(admin)/notifications/page.tsx",
+  "app/portal/notifications/page.tsx",
 ];
 
 /** OWNED directories allowed to hold no scanned file. None today. */

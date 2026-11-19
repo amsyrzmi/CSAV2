@@ -210,6 +210,15 @@ const explained: Record<string, string> = {
   "KB capability is missing or disabled":
     "The knowledge assistant is switched off, so this can't be tried again right now.",
   "ingest job not found": "That upload is no longer on the list. The list has been refreshed.",
+  // Notification targets and preferences (csa/console/notification_targets.py).
+  duplicate_address: "That address is already on the list.",
+  too_many_email_targets: "You have reached the most email addresses a company can have. Remove one first.",
+  email_test_failed:
+    "The test email could not be delivered, so nothing was saved. Check the address and try again.",
+  email_not_configured: "Email is not switched on for this deployment yet. Ask the platform team.",
+  test_not_supported: "A test message can only be sent to an email address.",
+  telegram_target_not_removable:
+    "The Telegram staff chat cannot be removed here. Change it on the Channels page.",
   // The Credit tab (csa/console/billing.py).
   billing_admin_required: "Only your company's Admin can see its AI Usage Charges and bill.",
   cycle_not_found: "That billing cycle has not started yet. Choose another one.",

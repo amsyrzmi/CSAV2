@@ -86,7 +86,8 @@ async def deliver_notice(
 
     The console rows go to the notice's recipients (a non-member is skipped). ``staff_chat``
     also queues the staff chat as ``staff_event`` (the notice's kind when it names none), with the
-    notice's ``params`` as the chat payload: ids and display names only, never message text.
+    notice's ``params`` and ``staff_params`` as the chat payload: ids, times and display names
+    only, never message text.
     """
     staff_event = (notice.staff_event or notice.kind) if notice.staff_chat else None
     return await notify_people(
@@ -100,7 +101,9 @@ async def deliver_notice(
         link=notice.link,
         dedupe_key=dedupe_key,
         staff_event=staff_event,
-        staff_payload=dict(notice.params) if staff_event is not None else None,
+        staff_payload={**notice.params, **(notice.staff_params or {})}
+        if staff_event is not None
+        else None,
     )
 
 

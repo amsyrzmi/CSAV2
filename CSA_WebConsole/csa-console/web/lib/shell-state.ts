@@ -36,6 +36,8 @@ export const NAV_ICONS: Record<NavKey, string> = {
   tenants: "Building2",
   members: "UsersRound",
   team: "UserRoundCog",
+  // Not a bell: the bell in the top bar is the notification list, this is its settings.
+  notifications: "SlidersHorizontal",
   password: "KeyRound",
   subscriptions: "CreditCard",
   payments: "Banknote",

@@ -54,6 +54,45 @@ test("the six kinds read exactly as decided, with every param present", () => {
   });
 });
 
+test("a failed notification target reads in plain words and names the channel", () => {
+  assert.deepEqual(render("notify.target_failed", { target_id: UUID, channel: "email", attempts: 5 }), {
+    title: "A notification target stopped working",
+    detail: "Email alerts could not be delivered after 5 attempts. Check the address on the Notifications page.",
+  });
+  assert.deepEqual(render("notify.target_failed", { target_id: UUID, channel: "telegram", attempts: 1 }), {
+    title: "A notification target stopped working",
+    detail: "Telegram alerts could not be delivered after 1 attempt. Check the staff chat on the Notifications page.",
+  });
+  assert.equal(
+    render("notify.target_failed", { channel: "email" }).detail,
+    "Email alerts could not be delivered. Check the address on the Notifications page.",
+    "a missing attempt count is dropped, never a gap",
+  );
+  for (const params of [undefined, {}, { channel: {}, attempts: "5" }, { channel: "sms", attempts: Number.NaN }]) {
+    const { title, detail } = render("notify.target_failed", params);
+    assert.equal(title, "A notification target stopped working");
+    assert.match(detail, /^Alerts could not be delivered\. Check the .* on the Notifications page\.$/);
+    assert.doesNotMatch(detail, /undefined|NaN|\[object|null/);
+  }
+});
+
+test("a failed notification email reads in plain words", () => {
+  assert.deepEqual(render("notify.email_failed", { attempts: 5 }), {
+    title: "Your notification email could not be delivered",
+    detail: "We tried 5 times. Check your email settings on the Notifications page.",
+  });
+  assert.deepEqual(render("notify.email_failed", { attempts: 1 }), {
+    title: "Your notification email could not be delivered",
+    detail: "We tried once. Check your email settings on the Notifications page.",
+  });
+  for (const params of [undefined, {}, { attempts: "5" }, { attempts: 0 }, { attempts: Number.NaN }]) {
+    assert.deepEqual(render("notify.email_failed", params), {
+      title: "Your notification email could not be delivered",
+      detail: "Check your email settings on the Notifications page.",
+    });
+  }
+});
+
 test("a missing duration drops the duration, never leaves a gap", () => {
   assert.equal(
     render("inbox.overdue", { customer: "Aisyah" }).detail,
@@ -238,6 +277,18 @@ test("badgeText table", () => {
   assert.equal(badgeText(99), "99");
   assert.equal(badgeText(100), "99+");
   assert.equal(badgeText(12345), "99+");
+});
+
+test("notificationLink opens the Notifications page for a notifications route", () => {
+  assert.deepEqual(notificationLink({ link: { route: "notifications" } }), { route: "notifications" });
+  assert.deepEqual(
+    notificationLink({ link: { route: "notifications", conversation: "x", junk: { a: 1 } } }),
+    { route: "notifications" },
+    "extra keys are dropped",
+  );
+  for (const route of ["Notifications", ["notifications"], "notifications/x", "/notifications", "", null, 7]) {
+    assert.equal(notificationLink({ link: { route } }), null, JSON.stringify(route));
+  }
 });
 
 test("notificationLink accepts only an inbox route with a UUID conversation", () => {

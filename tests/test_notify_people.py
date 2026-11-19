@@ -8,11 +8,12 @@ rows are read back through the owner.
 from __future__ import annotations
 
 import ast
+import typing
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, LiteralString
 
 import pytest
 from csa.core import db
@@ -85,6 +86,40 @@ async def _notify(
         return await notify_people(
             conn, uuid.UUID(client_id), recipients=[uuid.UUID(r) for r in recipients], **args
         )
+
+
+KINDS = (
+    "inbox.assigned",
+    "inbox.overdue",
+    "inbox.snooze_due",
+    "inbox.stale_claim",
+    "inbox.follow_up",
+    "inbox.handback",
+)
+
+
+def _prefs(dsn: str, client_id: str, user_id: str, **extra: Any) -> None:
+    """A saved preferences row (written as the owner); unnamed columns take their defaults."""
+    row: dict[str, Any] = {"client_id": client_id, "user_id": user_id, **extra}
+    with _owner(dsn) as conn:
+        conn.execute(
+            typing.cast(
+                "LiteralString",
+                f"INSERT INTO console_notification_prefs ({', '.join(row)})"
+                f" VALUES ({', '.join(['%s'] * len(row))})",
+            ),
+            tuple(row.values()),
+        )
+
+
+def _outbox_rows(dsn: str, client_id: str) -> list[dict[str, Any]]:
+    with _owner(dsn) as conn:
+        return conn.execute(
+            "SELECT o.*, n.id AS console_id FROM console_email_outbox o"
+            " LEFT JOIN console_notifications n ON n.id = o.notification_id"
+            " WHERE o.client_id = %s ORDER BY o.user_id",
+            (client_id,),
+        ).fetchall()
 
 
 def _csa_imports(tree: ast.Module) -> set[str]:
@@ -313,3 +348,146 @@ async def test_the_default_delivery_replays_without_a_second_row(
         async with tx(pool, c) as conn:
             await fire.deliver_notice(conn, uuid.UUID(c), sent, "r-9:1")
     assert len(_console_rows(migrated_dsn, c)) == 1 and len(_chat_rows(migrated_dsn, c)) == 1
+
+
+@requires_docker
+async def test_person_with_email_on_gets_outbox_row(
+    migrated_dsn: str, pool: AsyncConnectionPool
+) -> None:
+    c = _company(migrated_dsn)
+    on, off = member(migrated_dsn, c), member(migrated_dsn, c)
+    _prefs(migrated_dsn, c, on, email_enabled=True, min_priority="high")
+    _prefs(migrated_dsn, c, off, email_enabled=False)
+    result = await _notify(pool, c, [on, off])
+    assert result == NotifyResult(console_rows=2, chat_rows=0, email_rows=1)
+    [row] = _outbox_rows(migrated_dsn, c)
+    [console] = [r for r in _console_rows(migrated_dsn, c) if str(r["user_id"]) == on]
+    assert str(row["user_id"]) == on and row["console_id"] is not None
+    assert (row["kind"], row["priority"], row["message_key"]) == (
+        "inbox.overdue",
+        "high",
+        "inbox.overdue",
+    )
+    assert (
+        row["params"]
+        == console["params"]
+        == {
+            "customer": "Synthetic Customer",
+            "waited_minutes": 240,
+        }
+    )
+    assert row["link"] == LINK and row["status"] == "pending" and row["attempts"] == 0
+    # Ids and keys only: no address column is filled in (the table has none).
+    assert not any("mail" in name or "address" in name for name in row)
+
+
+@requires_docker
+async def test_floor_filters_priority(migrated_dsn: str, pool: AsyncConnectionPool) -> None:
+    c = _company(migrated_dsn)
+    person = member(migrated_dsn, c)
+    _prefs(migrated_dsn, c, person, email_enabled=True, min_priority="high")
+    below = await _notify(pool, c, [person], priority="normal", dedupe_key="p-1")
+    assert below.email_rows == 0 and _outbox_rows(migrated_dsn, c) == []
+    at = await _notify(pool, c, [person], priority="high", dedupe_key="p-2")
+    assert at.email_rows == 1
+    above = await _notify(pool, c, [person], priority="urgent", dedupe_key="p-3")
+    assert above.email_rows == 1
+    assert sorted(r["priority"] for r in _outbox_rows(migrated_dsn, c)) == ["high", "urgent"]
+
+
+@requires_docker
+async def test_kinds_filter(migrated_dsn: str, pool: AsyncConnectionPool) -> None:
+    c = _company(migrated_dsn)
+    person = member(migrated_dsn, c)
+    _prefs(migrated_dsn, c, person, email_enabled=True, kinds=["inbox.assigned"])
+    other = await _notify(pool, c, [person], dedupe_key="k-1")  # inbox.overdue
+    assert other.console_rows == 1 and other.email_rows == 0
+    listed = await _notify(pool, c, [person], kind="inbox.assigned", dedupe_key="k-2")
+    assert listed.email_rows == 1
+    # A kind outside the six (the failure notices, say) is never emailed.
+    stray = await _notify(pool, c, [person], kind="notify.target_failed", dedupe_key="k-3")
+    assert stray.email_rows == 0
+    assert [r["kind"] for r in _outbox_rows(migrated_dsn, c)] == ["inbox.assigned"]
+
+
+@requires_docker
+async def test_no_prefs_row_means_no_email(migrated_dsn: str, pool: AsyncConnectionPool) -> None:
+    c = _company(migrated_dsn)
+    person = member(migrated_dsn, c)
+    result = await _notify(pool, c, [person], priority="urgent")
+    assert result == NotifyResult(console_rows=1, chat_rows=0, email_rows=0)
+    assert _outbox_rows(migrated_dsn, c) == []
+
+
+@requires_docker
+async def test_replay_makes_no_second_outbox_row(
+    migrated_dsn: str, pool: AsyncConnectionPool
+) -> None:
+    c = _company(migrated_dsn)
+    person = member(migrated_dsn, c)
+    _prefs(migrated_dsn, c, person, email_enabled=True)
+    assert (await _notify(pool, c, [person])).email_rows == 1
+    again = await _notify(pool, c, [person])
+    assert again == NotifyResult(console_rows=0, chat_rows=0, email_rows=0)
+    assert len(_outbox_rows(migrated_dsn, c)) == 1
+
+
+@requires_docker
+async def test_the_email_row_commits_or_rolls_back_with_the_console_row(
+    migrated_dsn: str, pool: AsyncConnectionPool
+) -> None:
+    c = _company(migrated_dsn)
+    person = member(migrated_dsn, c)
+    _prefs(migrated_dsn, c, person, email_enabled=True)
+    with pytest.raises(RuntimeError, match="abort"):
+        async with tx(pool, c) as conn:
+            await notify_people(
+                conn,
+                uuid.UUID(c),
+                recipients=[uuid.UUID(person)],
+                kind="inbox.overdue",
+                priority="high",
+                message_key="inbox.overdue",
+                params={},
+                link=LINK,
+                dedupe_key="x-1",
+            )
+            raise RuntimeError("abort")
+    assert _console_rows(migrated_dsn, c) == [] and _outbox_rows(migrated_dsn, c) == []
+
+
+@requires_docker
+async def test_left_or_disabled_member_gets_no_outbox_row(
+    migrated_dsn: str, pool: AsyncConnectionPool
+) -> None:
+    c = _company(migrated_dsn)
+    left = member(migrated_dsn, c, member_enabled=False)
+    switched_off = member(migrated_dsn, c, account_enabled=False)
+    for person in (left, switched_off):
+        _prefs(migrated_dsn, c, person, email_enabled=True)
+    result = await _notify(pool, c, [left, switched_off])
+    assert result == NotifyResult(console_rows=0, chat_rows=0, email_rows=0)
+    assert _outbox_rows(migrated_dsn, c) == []
+
+
+@requires_docker
+async def test_platform_admin_recipient_gets_none(
+    migrated_dsn: str, pool: AsyncConnectionPool
+) -> None:
+    c = _company(migrated_dsn)
+    admin = member(migrated_dsn, c, "tenant_admin", platform_admin=True)
+    _prefs(migrated_dsn, c, admin, email_enabled=True)
+    result = await _notify(pool, c, [admin])
+    assert result == NotifyResult(console_rows=0, chat_rows=0, email_rows=0)
+    assert _outbox_rows(migrated_dsn, c) == []
+
+
+@requires_docker
+async def test_every_kind_can_be_emailed(migrated_dsn: str, pool: AsyncConnectionPool) -> None:
+    c = _company(migrated_dsn)
+    person = member(migrated_dsn, c)
+    _prefs(migrated_dsn, c, person, email_enabled=True)  # default kinds: all six
+    for kind in KINDS:
+        result = await _notify(pool, c, [person], kind=kind, dedupe_key=f"e-{kind}")
+        assert result.email_rows == 1, kind
+    assert sorted(r["kind"] for r in _outbox_rows(migrated_dsn, c)) == sorted(KINDS)
