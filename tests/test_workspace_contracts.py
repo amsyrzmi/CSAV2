@@ -12,6 +12,7 @@ from csa.workspace.contracts import (
     MAX_WORK_TTL,
     AnswerProposal,
     AnswerResult,
+    BookingActionProposal,
     ClarificationProposal,
     DirectoryLookupProposal,
     DirectoryResult,
@@ -572,14 +573,10 @@ def test_workspace_proposal_discriminator_parses_every_kind() -> None:
 def test_booking_action_takes_a_single_room_as_rooms() -> None:
     """The model often writes ``room`` (as in availability) for one room: read it as ``rooms``."""
     adapter = TypeAdapter(WorkspaceProposal)
-    one = adapter.validate_json(
-        json.dumps({"action": "booking_action", "change": "book", "room": "Room A"})
-    )
-    assert one.rooms == ["Room A"]
-    many = adapter.validate_json(
-        json.dumps({"action": "booking_action", "change": "book", "room": ["A", "B"]})
-    )
-    assert many.rooms == ["A", "B"]
+    for given, expected in (("Room A", ["Room A"]), (["A", "B"], ["A", "B"])):
+        raw = json.dumps({"action": "booking_action", "change": "book", "room": given})
+        assert BookingActionProposal.model_validate_json(raw).rooms == expected
+        assert isinstance(adapter.validate_json(raw), BookingActionProposal)
     for bad in ({"room": ""}, {"room": ["x"] * 11}, {"room": 3}):
         with pytest.raises(ValidationError):
             adapter.validate_json(json.dumps({"action": "booking_action", "change": "book", **bad}))
