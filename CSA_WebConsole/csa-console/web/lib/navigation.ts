@@ -4,7 +4,7 @@ import type { PackageState } from "./services-api";
 export type NavKey =
   | "overview" | "services" | "hr" | "activity" | "knowledge_base"
   | "inbox" | "email" | "business" | "tenants" | "members"
-  | "team" | "password" | "subscriptions" | "payments" | "bookings" | "training_library" | "connections"
+  | "team" | "notifications" | "password" | "subscriptions" | "payments" | "bookings" | "training_library" | "connections"
   | "credit" | "billing";
 /** A sub-page of a rail group; the testId names it for tests and the section bar. */
 export interface NavChild { key: string; label: string; href: string; testId?: string }
@@ -186,6 +186,8 @@ export function navigationFor(me: Me, packages: PackageState[]): NavLink[] {
     // The company's own usage and bill, for its Admin only and with no package. The platform
     // team reads every company's billing on its own page.
     { key: "credit", label: "Credit", href: "/portal/credit", show: me.role === "tenant_admin" },
+    // Every role sees Notifications; the page hides the personal section for a platform admin.
+    { key: "notifications", label: "Notifications", href: to("notifications") },
     { key: "password", label: "Password", href: to("password") },
   ];
   return entries
