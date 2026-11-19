@@ -25,6 +25,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import EllipsisType
 from typing import Any
 from uuid import UUID
 
@@ -198,7 +199,11 @@ class Api:
         turns: int = 0,
         by_tenant: dict[str, list[dict[str, str]]] | None = None,
         warnings: list[str] | None = None,
+        counts: dict[str, Any] | None | EllipsisType = ...,
     ) -> None:
+        # `...` leaves `counts` out of the answer (an older server); None is the server's "could
+        # not read them".
+        self.counts = counts
         self.packages = SUPPORT_AND_HR if packages is None else packages
         self.by_tenant = by_tenant or {}
         self.warnings = warnings or []
@@ -279,6 +284,8 @@ class Api:
                 await self.fail(route)
                 return
             data = {"items": [], "next_cursor": None, "needs_review_count": self.review}
+            if self.counts is not ...:
+                data["counts"] = self.counts
         elif path == "services/customer-replies" and request.method == "GET":
             # The gateway answers Customer support active or suspended and refuses everyone else.
             # The page only asks where the banner shows, so a refusal here would be a console error.
@@ -947,6 +954,89 @@ async def test_strip_shows_both_numbers_for_staff(console: Console, support: str
         strip = page.get_by_test_id("overview-strip")
         await expect(strip.locator("a")).to_have_count(0)
         await expect(page.locator('[data-testid="overview-strip"][role]')).to_have_count(0)
+
+
+QUEUE_COUNTS = {
+    "needs_us": 5,
+    "mine": 3,
+    "unassigned": 2,
+    "overdue": 1,
+    "waiting_customer": 4,
+    "snoozed": 0,
+    "oldest_waiting_at": None,
+}
+QUEUE_PILLS = [
+    "overview-strip-" + name for name in ("review", "needs-us", "overdue", "mine", "services")
+]
+
+
+async def test_strip_shows_the_queue_counts_in_order(console: Console) -> None:
+    api = Api(review=2, counts=QUEUE_COUNTS)
+    me = make_me("tenant_staff", assistant=True)
+    async with open_overview(console, api, "/portal", me=me) as page:
+        await expect(page.get_by_test_id("overview-strip-mine")).to_be_visible()
+        assert (
+            await strip_text(page) == "2 Replies to check 5 Needs us 1 Overdue 3 Mine 2 Services on"
+        )
+        # The pills sit in the agreed order, each with its own test id.
+        ids = (
+            await page.get_by_test_id("overview-strip")
+            .locator("li")
+            .evaluate_all("items => items.map(item => item.dataset.testid)")
+        )
+        assert ids == QUEUE_PILLS
+        await expect(page.get_by_test_id("overview-strip-needs-us")).to_contain_text("5")
+        await expect(page.get_by_test_id("overview-strip-overdue")).to_contain_text("1")
+        await expect(page.get_by_test_id("overview-strip-mine")).to_contain_text("3")
+        # Overdue above zero takes the warning tone (the class, not the colour); Needs us does not.
+        assert "fs-warning-bg" in (
+            await page.get_by_test_id("overview-strip-overdue").get_attribute("class") or ""
+        )
+        assert "fs-warning-bg" not in (
+            await page.get_by_test_id("overview-strip-needs-us").get_attribute("class") or ""
+        )
+        # No new request: the counts ride on the read the strip already makes.
+        assert len(api.paths("inbox/conversations")) == 1, api.requests
+        assert [p for _, p in api.requests if p.startswith("inbox/queue")] == []
+        # Still plain text: no link, no role, no live region.
+        strip = page.get_by_test_id("overview-strip")
+        await expect(strip.locator("a")).to_have_count(0)
+        await expect(strip.locator("[role]")).to_have_count(0)
+        await expect(page.locator('[data-testid="overview-strip"][role]')).to_have_count(0)
+        await expect(page.locator('[data-testid="overview-strip"][aria-live]')).to_have_count(0)
+
+
+async def test_strip_overdue_at_zero_is_neutral_and_zero_counts_show(console: Console) -> None:
+    counts = {**QUEUE_COUNTS, "needs_us": 0, "mine": 0, "overdue": 0}
+    api = Api(review=0, counts=counts)
+    async with open_overview(console, api, "/portal", me=make_me("tenant_staff")) as page:
+        await expect(page.get_by_test_id("overview-strip-mine")).to_be_visible()
+        assert (
+            await strip_text(page) == "0 Replies to check 0 Needs us 0 Overdue 0 Mine 2 Services on"
+        )
+        for name in ("review", "needs-us", "overdue", "mine"):
+            pill = page.get_by_test_id(f"overview-strip-{name}")
+            assert "fs-warning-bg" not in (await pill.get_attribute("class") or "")
+
+
+async def test_strip_without_counts_shows_no_queue_pill(console: Console) -> None:
+    # `counts: null` is the server saying it could not read them; an absent key is an older server.
+    for counts in (None, ...):
+        api = Api(review=0, counts=counts)
+        async with open_overview(console, api, "/portal", me=make_me("tenant_staff")) as page:
+            await expect(page.get_by_test_id("overview-strip-services")).to_be_visible()
+            assert await strip_text(page) == "0 Replies to check 2 Services on"
+            for name in ("needs-us", "overdue", "mine"):
+                await expect(page.get_by_test_id(f"overview-strip-{name}")).to_have_count(0)
+
+
+async def test_strip_platform_admin_has_no_mine(console: Console) -> None:
+    api = Api(review=2, counts=QUEUE_COUNTS)
+    me = make_me("platform_admin", assistant=True)
+    async with open_overview(console, api, "/?client_id=tenant-a", me=me) as page:
+        await expect(page.get_by_test_id("overview-strip-needs-us")).to_be_visible()
+        assert await strip_text(page) == "2 Replies to check 5 Needs us 1 Overdue 2 Services on"
+        await expect(page.get_by_test_id("overview-strip-mine")).to_have_count(0)
 
 
 async def test_strip_hides_review_for_read_only_and_when_inbox_read_fails(
