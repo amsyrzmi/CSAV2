@@ -28,6 +28,7 @@ from tests.test_staging_rollout import (
     RUNNING_REF,
     SHA,
     FakeRunner,
+    _md_section,
     fail,
     has,
     ok,
@@ -1238,10 +1239,15 @@ def test_plan_refuses_video_without_the_key_before_any_docker_command(
 
 def test_runbooks_describe_the_resolver_setting_and_its_exit_codes() -> None:
     root = Path(__file__).resolve().parent.parent
-    for name in ("PRODUCTION.md", "RELEASE.md"):
-        text = " ".join((root / "deploy" / name).read_text(encoding="utf-8").split())
+    deploy_text = (root / "deploy" / "DEPLOY.md").read_text(encoding="utf-8")
+    # The production runbook's resolver text moved to DEPLOY.md with the section it belongs to
+    # (its stub names neither the setting nor the script); RELEASE.md keeps its own mentions.
+    # DEPLOY.md is read only in that section: `nothing to roll out` and the script's name occur
+    # elsewhere in it (the staging section), so a whole-file match would not notice a deletion.
+    production = " ".join(_md_section(deploy_text, "Production: deploying from GitHub").split())
+    release = " ".join((root / "deploy" / "RELEASE.md").read_text(encoding="utf-8").split())
+    for name, text in (("DEPLOY.md", production), ("RELEASE.md", release)):
         assert "DEPLOY_TARGET" in text, name
         assert "resolve_commit.sh" in text, name
-    production = " ".join((root / "deploy" / "PRODUCTION.md").read_text(encoding="utf-8").split())
     assert "exits 3" in production
     assert "nothing to roll out" in production

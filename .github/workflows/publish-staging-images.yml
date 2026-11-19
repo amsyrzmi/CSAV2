@@ -1,10 +1,12 @@
 # Publish the exact OCI archives from one successful main CI run to GHCR for
 # isolated staging. Starts on manual dispatch or when a green push-to-main
-# `ci` run completes; the `staging-images` environment approval is still
-# required either way. Nothing is rebuilt: the CI archive is checksum-verified
-# and copied with its manifest digest preserved, then the registry digest is
-# re-read and compared. Tags are the full source SHA only, never `latest`.
-# Publishing does not deploy, start staging or provision secrets.
+# `ci` run completes. The image publish needs no approval today (the
+# `staging-images` environment has no reviewer). If a reviewer is added to
+# `staging-images`, every merge waits on that click. Nothing is rebuilt: the
+# CI archive is checksum-verified and copied with its manifest digest
+# preserved, then the registry digest is re-read and compared. Tags are the
+# full source SHA only, never `latest`. Publishing does not deploy, start
+# staging or provision secrets.
 name: publish-staging-images
 
 on:
@@ -71,7 +73,7 @@ jobs:
           [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid head_sha" >&2; exit 1; }
           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: main
           fetch-depth: 0
@@ -82,7 +84,7 @@ jobs:
           HEAD_SHA: ${{ steps.run.outputs.head_sha }}
         run: git merge-base --is-ancestor "$HEAD_SHA" HEAD
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: csa-review-only-${{ steps.run.outputs.head_sha }}
           path: ${{ runner.temp }}/release

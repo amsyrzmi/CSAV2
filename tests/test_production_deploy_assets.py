@@ -1833,10 +1833,13 @@ NEW_FILES = (
     PLAN_PERMISSIONS,
     APPLY_PERMISSIONS,
     WORKFLOW,
+    ROOT / ".github" / "workflows" / "deploy-production-auto.yml",
     PRODUCTION_DIR / "backup.sh",
+    PRODUCTION_DIR / "auto_plan.sh",
     PRODUCTION_CONFIG_EXAMPLE,
     STAGING_CONFIG_EXAMPLE,
     ROOT / "deploy" / "aws" / "setup-target.sh",
+    ROOT / "deploy" / "github" / "setup-environments.sh",
 )
 
 
@@ -2739,9 +2742,9 @@ def test_backup_refuses_an_unreadable_host_file(tmp_path: Path) -> None:
 # --- the runbook and the skills -----------------------------------------------------------------
 
 PRODUCTION_DOC = ROOT / "deploy" / "PRODUCTION.md"
+DEPLOY_DOC = ROOT / "deploy" / "DEPLOY.md"
 PIPELINE_DOC = ROOT / "deploy" / "STAGING_PIPELINE.md"
-STAGING_SKILL = ROOT / ".claude" / "skills" / "staging-rollout" / "SKILL.md"
-PRODUCTION_SKILL = ROOT / ".claude" / "skills" / "production-deploy" / "SKILL.md"
+DEPLOY_SKILL = ROOT / ".claude" / "skills" / "deploy" / "SKILL.md"
 
 
 def _section(text: str, heading: str) -> str:
@@ -2758,9 +2761,19 @@ def _production_doc() -> str:
     return PRODUCTION_DOC.read_text(encoding="utf-8")
 
 
+def _deploy_doc() -> str:
+    return DEPLOY_DOC.read_text(encoding="utf-8")
+
+
+# The generic production sections (the workflow, the steps, what a smoke stop, a failure and each
+# refusal mean) live in deploy/DEPLOY.md; the host-specific setup, restore and break-glass stay in
+# deploy/PRODUCTION.md. The tests below read each needle from the file that now holds its sentence.
+DEPLOYING_HEADING = "Production: deploying from GitHub"
+
+
 def test_production_doc_mentions_every_one_time_step() -> None:
     text = _production_doc()
-    deploying = _section(text, "Deploying from GitHub")
+    deploying = _section(_deploy_doc(), DEPLOYING_HEADING)
     setup = _section(text, "One-time setup")
     break_glass = _section(text, "Break-glass")
 
@@ -2854,7 +2867,12 @@ def test_setup_section_names_every_secret_variable_and_environment_the_workflow_
     assert "gh secret set PROD_CONSOLE_ORIGIN --repo amsyrzmi/CSAV2 --env production" in github
 
 
-SCANNED_DOCS = ("PRODUCTION.md", "production skill", "staging skill", "pipeline routine")
+SCANNED_DOCS = (
+    "PRODUCTION.md",
+    "DEPLOY.md",
+    "deploy skill",
+    "pipeline routine",
+)
 
 
 def _scanned_doc(name: str) -> str:
@@ -2863,8 +2881,8 @@ def _scanned_doc(name: str) -> str:
         return _section(PIPELINE_DOC.read_text(encoding="utf-8"), "Routine rollouts")
     path = {
         "PRODUCTION.md": PRODUCTION_DOC,
-        "production skill": PRODUCTION_SKILL,
-        "staging skill": STAGING_SKILL,
+        "DEPLOY.md": DEPLOY_DOC,
+        "deploy skill": DEPLOY_SKILL,
     }[name]
     return path.read_text(encoding="utf-8")
 
@@ -2906,7 +2924,7 @@ def test_the_scan_catches_what_it_forbids() -> None:
 
 def test_staging_skill_mentions_the_staged_record() -> None:
     retry = f"{sr.RECORD_COMMAND} --sha"
-    skill = STAGING_SKILL.read_text(encoding="utf-8")
+    skill = DEPLOY_SKILL.read_text(encoding="utf-8")
     routine = _section(PIPELINE_DOC.read_text(encoding="utf-8"), "Routine rollouts")
 
     for text in (skill, routine):
@@ -2917,11 +2935,8 @@ def test_staging_skill_mentions_the_staged_record() -> None:
 
 
 def test_production_skill_plans_waits_for_approval_and_never_bypasses_the_gate() -> None:
-    text = PRODUCTION_SKILL.read_text(encoding="utf-8")
-    frontmatter = text.split("---", 2)[1]
+    text = DEPLOY_SKILL.read_text(encoding="utf-8")
 
-    assert "name: production-deploy" in frontmatter
-    assert "description: Use when the owner asks to deploy" in frontmatter
     for needle in (
         "deploy-production",
         "gh workflow run deploy-production",
@@ -2955,7 +2970,7 @@ def test_production_skill_plans_waits_for_approval_and_never_bypasses_the_gate()
 def test_production_doc_describes_the_tip_default_digests_smoke_and_rollback() -> None:
     text = _production_doc()
     # Prose needles are matched with line breaks and runs of spaces collapsed.
-    deploying = " ".join(_section(text, "Deploying from GitHub").split())
+    deploying = " ".join(_section(_deploy_doc(), DEPLOYING_HEADING).split())
     setup_raw = _section(text, "One-time setup")
     setup = " ".join(setup_raw.split())
     break_glass = " ".join(_section(text, "Break-glass").split())
@@ -2964,6 +2979,16 @@ def test_production_doc_describes_the_tip_default_digests_smoke_and_rollback() -
 
     # An empty sha is the tip of main, and each refusal the plan job can print is named.
     assert "Leave `sha` empty to deploy the tip of `main`" in deploying
+    # The two sentences about an auto-started run (steps 2 and 4 of the section).
+    for needle in (
+        "A run may already exist: when `PROD_AUTO_PLAN` is `true`",
+        "Look at the latest runs before starting another one",
+        "gh run list --repo amsyrzmi/CSAV2 --workflow deploy-production.yml --limit 5",
+        "`triggering_actor` of an auto-started run is `github-actions[bot]`",
+        "A dispatch made by `deploy-production-auto` counts as a dispatch here and can replace "
+        "a person's *pending* run",
+    ):
+        assert needle in deploying, needle
     for needle in (
         "sha must be the full 40 character lowercase commit SHA",
         "commit <sha7> is not on main",
@@ -2978,6 +3003,8 @@ def test_production_doc_describes_the_tip_default_digests_smoke_and_rollback() -
     assert "anonymous" in deploying
     assert "`read:packages` token is needed only for break-glass" in setup
     assert "needed for every deploy" not in flat_text
+    # The moved region (the IMAGE_NAMESPACE paragraph) says it where it now lives, too.
+    assert "needed for every deploy" not in " ".join(_deploy_doc().split())
     assert "still enforces the staged gate" in break_glass
     # The smoke test: the instance's checks, then the public step.
     for needle in ("5 s apart", "`PROD_CONSOLE_ORIGIN`", "2xx or 3xx", "frontend"):
@@ -2996,6 +3023,7 @@ def test_production_doc_describes_the_tip_default_digests_smoke_and_rollback() -
     assert "130 minutes" in deploying
     assert "rolls back" in deploying
     assert "40-minute" not in flat_text
+    assert "40-minute" not in " ".join(_deploy_doc().split())
     # The secret, listed in step 6 with what it is.
     assert (
         "`PROD_CONSOLE_ORIGIN`" in setup_raw[setup_raw.index("### 6.") : setup_raw.index("### 7.")]
@@ -3044,16 +3072,19 @@ def test_production_doc_describes_the_tip_default_digests_smoke_and_rollback() -
 
 def test_production_doc_review_fixes() -> None:
     text = _production_doc()
-    deploying = _section(text, "Deploying from GitHub")
+    deploy_text = _deploy_doc()
+    deploying = _section(deploy_text, DEPLOYING_HEADING)
     setup = _section(text, "One-time setup")
 
     # (a) a Systems Manager timeout is a terminal status: runner exit 1, not 124.
     assert "`TimedOut`" in deploying
     assert "120 minutes" in deploying
-    assert not re.search(r"(?<![0-9])30 minutes", text)
+    for both in (text, deploy_text):
+        assert not re.search(r"(?<![0-9])30 minutes", both)
     # The runner's wait is 115 minutes of elapsed time since the send, not an estimate from polls.
     assert "115 minutes (by the clock, not a count of polls)" in deploying
-    assert "about 115 minutes" not in text
+    for both in (text, deploy_text):
+        assert "about 115 minutes" not in both
     # (b) a fresh CloudShell tab fails before any placeholder is filled with nothing.
     guard = ': "${REGION:?}" "${ACCOUNT:?}" "${NODE:?}" "${OIDC:?}" "${SUBJECT:?}"'
     assert guard in setup
@@ -3096,7 +3127,8 @@ def test_production_doc_review_fixes() -> None:
 
 def test_production_doc_covers_the_staged_record_the_shared_entry_script_and_the_lock() -> None:
     text = _production_doc()
-    deploying = " ".join(_section(text, "Deploying from GitHub").split())
+    deploying = " ".join(_section(_deploy_doc(), DEPLOYING_HEADING).split())
+    stub = " ".join(_section(text, "Deploying from GitHub").split())
     setup = _section(text, "One-time setup")
     after = _section(text, "After the digest change merges")
     reinstall = _section(text, "Reinstalling the shared entry script")
@@ -3138,9 +3170,45 @@ def test_production_doc_covers_the_staged_record_the_shared_entry_script_and_the
         "sudo install -m 0755 -o root -g root"
     )
     assert "/run/lock/csa-prod-rollout.lock" in deploying
+    assert "/run/lock/csa-prod-rollout.lock" in stub  # the stub states the lock for this host
     # resolve_commit.sh: its target setting and its "not ready yet" exit code.
     assert "DEPLOY_TARGET" in deploying
     assert "exits 3" in deploying
+
+
+def test_production_doc_stub_names_this_hosts_facts_and_points_at_deploy_md() -> None:
+    section = _section(_production_doc(), "Deploying from GitHub")
+    stub = " ".join(section.split("\n### ")[0].split())  # above the registry login subsection
+
+    for needle in (
+        'Moved to deploy/DEPLOY.md, "Production: deploying from GitHub".',
+        "/usr/local/sbin/csa-prod-deploy",
+        "/home/ubuntu/CSAV2",
+        "/opt/csa-deploy/venv",
+        "/var/log/csa-prod-deploy",
+        "/run/lock/csa-prod-rollout.lock",
+    ):
+        assert needle in stub, needle
+    # The registry login file (a fact of this host) stays here, under the stub.
+    assert "### Optional registry login on the instance" in section
+
+
+def test_production_doc_pointers_into_moved_sections_name_deploy_md() -> None:
+    flat = " ".join(_production_doc().split())
+    base = '`deploy/DEPLOY.md`, "Production: deploying from GitHub"'
+
+    assert f'{base}, "What a failure means"' in flat
+    assert flat.count(f"{base}, step 2") == 2  # the first-plan step and the picture-messages order
+    # The old wordings pointed at headings and steps that are no longer in this file.
+    assert not re.search(r"Deploying from GitHub, step", flat)
+    assert "see What a failure means" not in flat
+
+
+def test_production_doc_manual_step_6_says_to_leave_admin_bypass_off() -> None:
+    setup = _section(_production_doc(), "One-time setup")
+    github = setup[setup.index("### 6.") : setup.index("### 7.")]
+
+    assert 'Allow administrators to bypass" off' in " ".join(github.split())
 
 
 def test_release_doc_names_the_resolver_target_and_exit_code() -> None:
@@ -3150,7 +3218,7 @@ def test_release_doc_names_the_resolver_target_and_exit_code() -> None:
 
 
 def test_production_skill_says_what_not_staged_yet_means() -> None:
-    flat = " ".join(PRODUCTION_SKILL.read_text(encoding="utf-8").split())
+    flat = " ".join(DEPLOY_SKILL.read_text(encoding="utf-8").split())
     assert "not staged yet; wait for deploy-staging" in flat
     assert "gh run list --repo amsyrzmi/CSAV2 --workflow deploy-staging.yml --limit 5" in flat
     assert "deploy-staging" in flat
@@ -3163,10 +3231,14 @@ def test_parse_plan_points_at_text_that_exists_in_the_pipeline_runbook() -> None
         "(roll back by hand, deploy/STAGING_PIPELINE.md)"
     )
     assert refusal in script
-    doc = " ".join(PIPELINE_DOC.read_text(encoding="utf-8").split())
-    assert "roll back by hand" in doc
+    # The refusal row moved with the staging outcome table to DEPLOY.md; the manual procedure it
+    # points at stays in the pipeline runbook.
+    doc = " ".join(DEPLOY_DOC.read_text(encoding="utf-8").split())
     assert refusal in doc
-    assert "Manual rollout (break-glass)" in doc
+    assert "roll back by hand" in doc
+    pipeline = " ".join(PIPELINE_DOC.read_text(encoding="utf-8").split())
+    assert "Manual rollout (break-glass)" in pipeline
+    assert "roll back by hand" in pipeline
 
 
 def test_spec_lists_the_changes_made_while_building_pr_2() -> None:
@@ -3191,6 +3263,87 @@ def test_spec_lists_the_changes_made_while_building_pr_2() -> None:
         "unpinned",
     ):
         assert needle in flat, needle
+
+
+SPEC_PATH = ROOT / "docs" / "superpowers" / "specs" / "2026-11-13-cd-pipeline-design.md"
+SPEC_PR2_NEEDLES = (
+    "tip of `main`",
+    "`workflow_run`",
+    "STAGING_AUTO_PAUSED",
+    "csa-deploy",
+    "/usr/local/sbin/csa-staging-deploy",
+    "six keys",
+    "/run/lock/<project>-rollout.lock",
+    "fs.protected_regular",
+    "`staging rollout`",
+    "exits 3",
+    "STAGING_DEPLOY_REGION",
+    "three levels",
+    "unpinned",
+)
+
+
+def test_spec_lists_the_changes_made_while_building_pr_3() -> None:
+    spec = SPEC_PATH.read_text(encoding="utf-8")
+    pr2 = " ".join(_section(spec, "Changes made while building PR 2").split())
+    # The PR 3 section is new text after the PR 2 one: nothing inside the PR 2 section was edited.
+    for needle in SPEC_PR2_NEEDLES:
+        assert needle in pr2, needle
+    headings = [line for line in spec.splitlines() if line.startswith("## ")]
+    pr2_at = next(
+        n for n, h in enumerate(headings) if h.startswith("## Changes made while building PR 2")
+    )
+    assert headings[pr2_at + 1] == "## Changes made while building PR 3"
+
+    flat = " ".join(_section(spec, "Changes made while building PR 3").split())
+    for needle in (
+        "deploy-production-auto",
+        "`workflow_dispatch`",
+        "`GITHUB_TOKEN`",
+        "three `workflow_run` links",
+        "the dispatch comes last",
+        "`auto_plan.sh check`",
+        "`waiting`",
+        "`in_progress`",
+        "never knowingly",
+        "never approve",
+        "`deploy-production.yml` is untouched",
+        "Manual dispatch only",
+        "`PUT .../environments/<env>`",
+        "re-read",
+        "not documented",
+        "did not reset",
+        "reviewers",
+        "`can_admins_bypass`",
+        "`false` on `production` and `production-plan` on 2026-11-18",
+        "`prevent_self_review` stays `false`",
+        "`staging-images`",
+        "no branch",
+        "deployment-branch-policies",
+        "never prints a secret",
+        "`--check`",
+        "moved-heading test",
+        "pin",
+        "PRODUCTION.md had no",
+        "one `deploy` skill",
+        "The image publish needs no approval today (the `staging-images` environment has no"
+        " reviewer). If a reviewer is added to `staging-images`, every merge waits on that click.",
+    ):
+        assert needle in flat, needle
+
+
+def test_spec_design_text_no_longer_states_what_pr_3_changed() -> None:
+    flat = " ".join(SPEC_PATH.read_text(encoding="utf-8").split())
+    assert "A second trigger, `workflow_run` of `deploy-staging` succeeding" not in flat
+    assert "A new auto-started run cancels earlier runs" not in flat
+    assert "is `in_progress` is never cancelled" not in flat
+    assert "is `in_progress` is never knowingly cancelled" in flat
+
+
+def test_project_overview_links_the_deploy_runbook() -> None:
+    text = (ROOT / "docs" / "PROJECT_OVERVIEW.md").read_text(encoding="utf-8")
+    assert "| Deploying staging and production | [Deploy runbook](../deploy/DEPLOY.md) |" in text
+    assert (ROOT / "deploy" / "DEPLOY.md").is_file()
 
 
 def test_spec_matches_the_tip_default_and_the_registry_method() -> None:

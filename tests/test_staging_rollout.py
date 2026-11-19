@@ -1436,12 +1436,13 @@ def test_seed_runbook_points_at_the_live_checkout() -> None:
     assert "cd /home/amsyrzmi/CSAV2 " in text
 
 
+DEPLOY_SKILL = REPO / ".claude" / "skills" / "deploy" / "SKILL.md"
+
+
 def test_skill_requires_plan_then_owner_go_then_apply() -> None:
-    text = (REPO / ".claude" / "skills" / "staging-rollout" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    text = DEPLOY_SKILL.read_text(encoding="utf-8")
     frontmatter = text.split("---", 2)[1]
-    assert "name: staging-rollout" in frontmatter
+    assert "name: deploy" in frontmatter
     assert "description: Use when the owner asks to roll out, deploy or update staging" in (
         frontmatter
     )
@@ -1482,7 +1483,23 @@ def test_pipeline_runbook_routine_rollouts_has_the_automatic_and_manual_subsecti
     ]
     assert text.index("## Host setup for automatic rollouts") > text.index(routine)
 
-    automatic = _flat(_md_section(text, "Automatic rollouts (deploy-staging)", 3))
+    # The section's text moved to DEPLOY.md; the pipeline runbook keeps the heading, a pointer line
+    # and the facts of this host.
+    stub = _flat(_md_section(text, "Automatic rollouts (deploy-staging)", 3))
+    assert 'Moved to deploy/DEPLOY.md, "Staging: automatic rollouts (deploy-staging)".' in stub
+    for needle in (
+        "/usr/local/sbin/csa-staging-deploy",
+        "/usr/local/sbin/csa-staging-deploy.conf",
+        "`csa-deploy`",
+        "/var/log/csa-staging-deploy/",
+        "/run/lock/csa-staging-rollout.lock",
+        "/srv/csa-staging-deploy",
+    ):
+        assert needle in stub, needle
+    assert "Every green merge" not in stub  # moved, not copied
+
+    deploy_md = (REPO / "deploy" / "DEPLOY.md").read_text(encoding="utf-8")
+    automatic = _flat(_md_section(deploy_md, "Staging: automatic rollouts (deploy-staging)"))
     for needle in (
         "Every green merge",
         "`nothing to roll out`",
@@ -1499,7 +1516,7 @@ def test_pipeline_runbook_routine_rollouts_has_the_automatic_and_manual_subsecti
         "--body false",
         "empty `sha`",
         "The workflow writes the staged record, not the host",
-        "stops all four services",
+        "A migration stops the app services on every such merge",
         "unrecorded",
         "concurrency group",
         "tip-only rule",
@@ -1515,11 +1532,12 @@ def test_pipeline_runbook_routine_rollouts_has_the_automatic_and_manual_subsecti
         "as `csa-deploy`",
         "member of the `docker` group",
         "a minute after the merge",
-        "branch protection",
+        "repository ruleset",
         "writable by `csa-deploy`",
         "git hooks",
-        "`staging-images` environment has no reviewer",
-        "does not exist as a gate today",
+        "the `staging-images` environment has no reviewer",
+        "needs no approval today",
+        "If a reviewer is added to `staging-images`, every merge waits on that click",
         # Explicit-sha dispatch shares the concurrency group.
         "An explicit-`sha` dispatch shares the `deploy-staging` concurrency group",
         "replace the pending automatic run for the tip",
@@ -1575,6 +1593,11 @@ def test_pipeline_runbook_host_setup_is_the_permanent_record_of_steps_3_to_14() 
         "deployment: false",
         "AssumeRole",
         "tell the owner before anything is changed",
+        # The scripts are the preferred path for steps 2, 13 and 14; the manual commands stay.
+        "deploy/github/setup-environments.sh staging --check --repo amsyrzmi/CSAV2",
+        "deploy/github/setup-environments.sh staging --repo amsyrzmi/CSAV2 --region <region>",
+        "--check --repo amsyrzmi/CSAV2 --image-namespace ghcr.io/amsyrzmi",
+        "gh secret list --repo amsyrzmi/CSAV2 --env staging",
     ):
         assert needle in flat, needle
     # Timing markers: steps 1-2 before the merge, the rest after it, in this order.
@@ -1618,19 +1641,45 @@ def test_pipeline_runbook_host_setup_is_the_permanent_record_of_steps_3_to_14() 
     assert not re.search(r"\b(?:us|eu|ap|sa|ca|me|af|il|mx)-[a-z]+-\d\b", setup)
 
 
+# The one sentence every document uses for the image publish (plan decision 12), verbatim.
+PUBLISH_NO_APPROVAL = (
+    "The image publish needs no approval today (the `staging-images` environment has no "
+    "reviewer). If a reviewer is added to `staging-images`, every merge waits on that click."
+)
+
+
 def test_pipeline_runbook_workflow_run_chain_wording_and_publish_approval() -> None:
     # GitHub runs A->B->C->D and skips a fifth workflow; the runbook must not claim that nothing
-    # can follow deploy-staging.
+    # can follow deploy-staging: deploy-production-auto is the fourth workflow of the chain.
     text = (REPO / "deploy" / "STAGING_PIPELINE.md").read_text(encoding="utf-8")
     flat = _flat(text)
     assert "nothing may be chained after" not in flat
     assert "does not run a fifth workflow" in flat
-    # The publish run still waits for the owner's approval; the automatic rollout follows it.
-    assert "waits for the owner's approval on the `staging-images` environment" in flat
-    skill = _flat(
-        (REPO / ".claude" / "skills" / "staging-rollout" / "SKILL.md").read_text(encoding="utf-8")
-    )
-    assert "The owner approves the image publish on GitHub" in skill
+    assert "deploy-production-auto" in flat
+    # The publish needs no approval today: the stale claim is gone from the three documents that
+    # carried it (the dated first-publication history of RELEASE.md is the exempt exception, and
+    # is checked in tests/test_deploy_docs.py), and the one verbatim sentence is in each.
+    release = (REPO / "deploy" / "RELEASE.md").read_text(encoding="utf-8")
+    release_flat = _flat(release.split("#### First publication: PR #11 merge images", 1)[0])
+    deploy_flat = _flat((REPO / "deploy" / "DEPLOY.md").read_text(encoding="utf-8"))
+    for name, document in (
+        ("STAGING_PIPELINE.md", flat),
+        ("DEPLOY.md", deploy_flat),
+        ("RELEASE.md", release_flat),
+    ):
+        assert "waits for the owner's approval on the `staging-images` environment" not in document
+        assert "still waits for the owner's approval" not in document, name
+        assert PUBLISH_NO_APPROVAL in document, name
+    # The deploy skill says the same, and never the stale claim (inverted check).
+    skill_flat = _flat(DEPLOY_SKILL.read_text(encoding="utf-8"))
+    assert "The owner approves the image publish" not in skill_flat
+    assert "no approval today" in skill_flat
+    for fragment in (
+        "no approval today",
+        "the `staging-images` environment has no reviewer",
+        "If a reviewer is added to `staging-images`, every merge waits on that click",
+    ):
+        assert fragment in PUBLISH_NO_APPROVAL
 
 
 def test_pipeline_runbook_registry_login_needs_search_and_read_not_ownership() -> None:
@@ -1664,9 +1713,7 @@ def test_pipeline_runbook_reset_section_takes_the_rollout_lock() -> None:
         "Stopped at lock: another rollout of staging is running; nothing was changed",
     ):
         assert needle in reset, needle
-    skill = _flat(
-        (REPO / ".claude" / "skills" / "staging-rollout" / "SKILL.md").read_text(encoding="utf-8")
-    )
+    skill = _flat(DEPLOY_SKILL.read_text(encoding="utf-8"))
     assert "set `STAGING_AUTO_PAUSED` to `true` first" in skill
     assert "`staging_reset` `wipe` and `accounts` take the same rollout lock" in skill
     assert "Stopped at lock: ..." in skill
@@ -1687,8 +1734,10 @@ def test_owned_docs_carry_no_local_paths_session_ids_or_personal_names() -> None
     files = (
         "deploy/STAGING_PIPELINE.md",
         "deploy/PRODUCTION.md",
-        ".claude/skills/staging-rollout/SKILL.md",
+        ".claude/skills/deploy/SKILL.md",
+        "deploy/DEPLOY.md",
         "docs/superpowers/plans/2026-11-17-cd-pipeline-pr2.md",
+        "docs/superpowers/plans/2026-11-18-cd-pipeline-pr3.md",
     )
     for name in files:
         text = (REPO / name).read_text(encoding="utf-8")
@@ -1714,9 +1763,7 @@ def test_host_setup_config_line_matches_the_example_config() -> None:
 
 
 def test_staging_skill_checks_the_workflow_and_keeps_the_manual_steps() -> None:
-    text = (REPO / ".claude" / "skills" / "staging-rollout" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    text = DEPLOY_SKILL.read_text(encoding="utf-8")
     flat = _flat(text)
     for needle in (
         "automatic",

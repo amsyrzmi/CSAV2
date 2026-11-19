@@ -94,8 +94,8 @@ CI's clean checkout, tests and recorded digests supply release identity.
 
 [publish-staging-images.yml](../.github/workflows/publish-staging-images.yml)
 is the reviewed path from a CI review archive to an immutable registry
-reference. It is manual (`workflow_dispatch`) and takes one `ci_run_id`. It
-does not rebuild. Instead, it:
+reference. It starts when a green push-to-main `ci` run completes, and by dispatch
+with a `ci_run_id`. It does not rebuild. Instead, it:
 
 1. requires the run to be a successful `push` of `.github/workflows/ci.yml` on
    `main` in this repository, with a 40-hex head SHA that is an ancestor of
@@ -109,14 +109,15 @@ does not rebuild. Instead, it:
 4. re-reads each registry manifest, fails unless its digest equals the archive
    manifest digest, and writes the `@sha256` references to the job summary.
 
-Only this job has `packages: write`; `ci.yml` remains build-only. Before the
-first dispatch, the repository owner must create the GitHub environment
-`staging-images` with a required reviewer and deployment branches restricted to
-`main`. GitHub auto-creates an unprotected environment if a job references a
-missing one, so dispatching before this setup removes the approval gate. The
-source run must be within the three-day artifact retention. Packages created
-by the workflow are private by default; staging-host pull credentials are a
-later, separate gate.
+Only this job has `packages: write`; `ci.yml` remains build-only. The image publish needs no
+approval today (the `staging-images` environment has no reviewer). If a reviewer is added to
+`staging-images`, every merge waits on that click. `deploy/github/setup-environments.sh staging`
+gives `staging-images` the `main`-only deployment-branch policy, so a workflow on another branch
+cannot use the environment and its `packages: write`. GitHub auto-creates an unprotected environment
+if a job references a missing one, so run that script before the first publish: an environment
+created that way has no branch restriction. The source run must be within the three-day artifact
+retention. Packages created by the workflow are private by default; staging-host pull credentials
+are a later, separate gate.
 
 Publication is not deployment, staging startup or acceptance. A published
 digest identifies a new build; it does not inherit evidence recorded for an

@@ -462,7 +462,7 @@ def format_plan(context: ResetContext) -> str:
     state = context.state
     lines = [
         "Staging reset plan (read-only; nothing was changed).",
-        f"Target SHA: {context.sha[:7]}; HEAD is on origin/main, clean, and all four services "
+        f"Target SHA: {context.sha[:7]}; HEAD is on origin/main, clean, and all five services "
         "run its image.",
         "Running images (the rebuilt schema must fit them):",
         f"  python (gateway, worker, delivery): {context.python_image}",
