@@ -70,11 +70,12 @@ for one person's onboarding or offboarding, who is onboarding, who is leaving an
 It reads through the same process reads as the console with the member's own session, so the HR team
 sees all, a manager sees direct reports' step titles, owner role, status and dates only, a person
 sees their own onboarding, offboarding and tasks, and a task owner sees their own tasks; it needs
-the HR service on but not People access. It never completes, approves, sends back, skips,
-reschedules, reassigns, cancels or closes a step: "mark my task done" is answered with a pointer to
-My tasks (slice 1c-ii, a confirm card, is next). Lists show ten rows; step titles are English in
+the HR service on but not People access. It never approves, sends back, skips, reschedules,
+reassigns, cancels or closes a step. Slice 1c-ii (2026-11-19, migration `0637`, top entry of
+[../PROGRESS.md](../PROGRESS.md)) adds the one write: "mark my task done" becomes a confirm card
+that completes the caller's own open step through the console's own complete path. Lists show ten rows; step titles are English in
 Malay answers while the templates have no Malay text. Still to do by the owner: the full
-`assistant_smoke` run on staging (95 cases, about 106 model calls; not run yet), the manual rows
+`assistant_smoke` run on staging (99 cases, about 110 model calls; the 1c-i run was 90/95 on staging), the manual rows
 under "HR process questions" in [../ASSISTANT_RETEST.md](../ASSISTANT_RETEST.md), and a read of the
 Malay wording listed in the entry. The operating note is
 [SETUP.md](./SETUP.md#ask-the-assistant-about-onboarding-and-offboarding).

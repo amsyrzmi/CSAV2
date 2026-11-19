@@ -224,6 +224,11 @@ test("settled proposals summarise their receipts", () => {
   const card = (title) => ({ card: { ...proposal("p").card, kind: "hr_person", title } });
   assert.equal(view.resultSummary(person(card("Add Danial Hakim to People"))), "Done: Add Danial Hakim to People.");
   assert.equal(view.resultSummary(person(card("Kemas kini Siti Aminah")), "ms"), "Selesai: Kemas kini Siti Aminah.");
+  // csa/workspace/hr_task_card.py: the receipt is the task operation's, never a title or name.
+  const task = (task_status) => proposal("p", { kind: "hr_task", status: "executed", result: { operation: "task.complete", task_id: "t1", process_id: "x1", task_status, version: 2, process_status: "active", status: "saved", duplicate: false } });
+  assert.equal(view.resultSummary(task("done")), "The step is marked done.");
+  assert.equal(view.resultSummary(task("awaiting_approval")), "The step is done and now waits for approval.");
+  assert.equal(view.resultSummary(task("awaiting_approval"), "ms"), "Langkah itu selesai dan kini menunggu kelulusan.");
   // csa/bookings/executor.py: the receipt is ids, status and time, never a name.
   const booking = (result, extra) => proposal("p", { kind: "booking_action", status: "executed", result, ...extra });
   const receipt = (change, status = "confirmed", more = {}) => ({ change, booking_id: "b1", status, starts_at: "2031-03-04T15:00:00+00:00", version: 1, ...more });

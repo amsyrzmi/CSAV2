@@ -363,6 +363,15 @@ class HrProcessReadProposal(_Contract):
         return self
 
 
+class HrTaskCompleteProposal(_Contract):
+    """Mark one of the caller's own open process steps done (a confirm card, never an approval).
+    ``task`` is words of the step's title the user named, or the option value (a task id) they
+    picked; nothing else, so no free text reaches the card."""
+
+    action: Literal["hr_task_complete"]
+    task: PersonText | None = None
+
+
 class BookingActionProposal(_Contract):
     """Book, move or cancel; every name is the user's own words and the server finds the rest.
 
@@ -507,6 +516,7 @@ WorkspaceProposal = Annotated[
         PeopleQueryProposal,
         HrPersonOpenProposal,
         HrProcessReadProposal,
+        HrTaskCompleteProposal,
         BookingActionProposal,
         EmailBatchProposal,
         PlanProposal,
@@ -526,6 +536,7 @@ ProposalKind = Literal[
     "inbox_decision",
     "subscription_action",
     "hr_person",
+    "hr_task",
     "booking_action",
     "plan",
 ]

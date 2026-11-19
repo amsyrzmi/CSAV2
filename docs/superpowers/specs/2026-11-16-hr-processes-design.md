@@ -312,6 +312,10 @@ views (my tasks, one person's process, who is onboarding, who is leaving, what i
 Malay, with no migration and no new proposal kind; see `2026-11-18-hr-assistant-processes-design.md`. Slice
 1c-ii, the "mark my task done" confirm card, is next and is its own PR.
 
+Note, 2026-11-19: slice 1c-ii is built (branch `feat/hr-assistant-complete`, migration `0637`): one new
+planner action `hr_task_complete`, one new proposal kind `hr_task`, completing only the caller's own
+open step; see `2026-11-19-hr-assistant-task-complete-design.md`.
+
 ## 10. Owner questions (answer or accept my default)
 
 1. **A step needs approval but the only possible approver is the person who did it** (a one-person HR team, or an

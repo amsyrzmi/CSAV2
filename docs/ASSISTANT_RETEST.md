@@ -21,8 +21,8 @@ docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke
   or an unknown case id.
 - The cases live in `csa/workspace/smoke_cases.json`. A unit test checks that every case id appears
   in this checklist and that every id cited here is a case.
-- A run is about 106 model calls: one planner call for each of the 95 cases plus one drafting call
-  for each of the 11 draft cases. With re-plans it is up to about 201 (up to twice the cases, plus
+- A run is about 110 model calls: one planner call for each of the 99 cases plus one drafting call
+  for each of the 11 draft cases. With re-plans it is up to about 209 (up to twice the cases, plus
   the drafting calls).
 
 **What a PASS checks, and nothing more.** Each case goes through the turn's own correction loop (at
@@ -400,8 +400,12 @@ planner, decides what that member sees.
 | Siapa yang melapor kepada Razak sekarang? | Any People viewer | The same query, from Malay | `hr_process_neg-ms-3` |
 | Please request a first aid training course for me | Staff linked with training access | A training request or a question, never hr_process_read | `hr_process_neg-en-4` |
 | Saya hendak memohon latihan pertolongan cemas | Staff linked with training access | The same, from Malay | `hr_process_neg-ms-4` |
-| Mark my task done | Any member | An answer, no card and no hr_process_read | `hr_process_neg-en-5` |
-| Tandakan tugasan saya sebagai selesai | Any member | The same answer, from Malay | `hr_process_neg-ms-5` |
+| Please approve Aina's laptop task | Any member | An answer saying approvals are done in My tasks; no card, never hr_task_complete or hr_process_read | `hr_process_neg-en-5` |
+| Luluskan tugasan komputer riba Aina | Any member | The same answer, from Malay | `hr_process_neg-ms-5` |
+| Mark my task done | Any member | An hr_task_complete with no task words (a card, a pick list or the "nothing to mark" sentence, by the person's steps) | `hr_task-en-1` |
+| Tandakan tugasan saya sebagai selesai | Any member | The same, from Malay | `hr_task-ms-1` |
+| I have finished the bank details step, please mark it done | Any member | An hr_task_complete, never hr_process_read | `hr_task-en-2` |
+| Saya sudah siap langkah butiran bank, tolong tandakan selesai | Any member | The same, from Malay | `hr_task-ms-2` |
 | What are my tasks? | A new starter with an onboarding | Only their own open steps, each as "title — onboarding for <name>, due <date>" (a mark such as "waiting for approval" or "sent back" where it applies); nothing about anyone else | manual |
 | Apa tugasan saya? | A new starter with an onboarding | The same, in Malay, answered in Malay | manual |
 | What is still outstanding for Aina's onboarding? | A manager of Aina, who is in onboarding | Titles, status and dates only; no task notes, no HR-only detail | manual |
@@ -413,8 +417,11 @@ planner, decides what that member sees.
 | Apa yang belum selesai untuk onboarding Siti? | HR owner, two people named Siti | The same question in Malay, each option as "name — onboarding, bermula <date>" | manual |
 | What is overdue? | HR owner, more than 10 overdue steps | Ten lines, then "N more not shown. See them all in <page>." | manual |
 | What is still outstanding for Aina's onboarding? | An onboarding that is completed or cancelled but still has an open step | "This process is completed" (or cancelled), and the open step reads "was due <date>", not "overdue" | manual |
-| Mark my task done | A new starter with an open task | A sentence pointing to My tasks; no card, and the task stays open | manual |
-| Tandakan tugasan saya sebagai selesai | A new starter with an open task | The same sentence in Malay; no card, and the task stays open | manual |
+| Mark my task done | A new starter with one open step of their own | One card "Mark a step done" with Step, For, Due and "After you confirm"; the step stays open until Confirm, then leaves My tasks | manual |
+| Tandakan tugasan saya sebagai selesai | A new starter with one open step of their own | The same card in Malay ("Tandakan langkah sebagai selesai"), with the Malay step title when the template has one | manual |
+| Mark my task done | A person with two open steps | "Which step do you mean?" with both steps as options; picking one gives its card | manual |
+| Mark my task done | A person whose step needs approval | The card says "The step then waits for approval by HR" (or the manager); after Confirm the step reads "waiting for approval" in My tasks, and nothing is approved | manual |
+| Mark my task done | The HR owner, or anyone with no step of their own | One sentence saying other steps are done in My tasks; no card | manual |
 
 ## Compose and send
 

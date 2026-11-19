@@ -128,6 +128,9 @@ Reserved ranges (client growth program, 2026-10-27):
   `hr_template_ties` (0631's tie rule, which `hr_template_conflicts` now calls), and changes
   `hr_process_start_apply`: a manual start meeting an active process of the kind is refused
   (`hr_process_already_active`) unless the body says `replace: true`.
+  0637 (the assistant's "mark my task done" card, slice 1c-ii) adds `hr_task` to
+  `console_proposals_kind_check` and `hr_task_complete` to `console_workspace_turns_action_check`,
+  read from the live lists as 0542 does; no table, column, grant or function changes.
 
 - `0620`–`0629`: Customer Inbox refinement. 0620 adds the queue columns on `conversations`, their
   checks, the activity and partial indexes the queue tabs and counts read, and the backfill function

@@ -37,6 +37,7 @@ from csa.workspace.contracts import (
     HrPersonOpenProposal,
     HrPersonUpdateProposal,
     HrProcessReadProposal,
+    HrTaskCompleteProposal,
     InboxDecisionProposal,
     InboxSummaryProposal,
     Language,
@@ -71,6 +72,7 @@ PlannerProposal = Annotated[
         PeopleQueryProposal,
         HrPersonOpenProposal,
         HrProcessReadProposal,
+        HrTaskCompleteProposal,
         BookingActionProposal,
         EmailBatchProposal,
         PlanProposal,
@@ -384,6 +386,9 @@ who_onboarding ("who is onboarding", "siapa yang sedang onboarding"), who_leavin
 leaving next month", "siapa yang akan berhenti", "rakan sekerja yang akan berhenti") or \
 overdue ("what is overdue", "is anything running late", "tugasan yang tertunggak" or "lewat"). \
 Give person only with person_process.
+- hr_task_complete: mark one of the user's own process steps done ("mark my task done", \
+"tandakan tugasan saya sebagai selesai"); task is words of the step's title only when the \
+user named one, or the option value they picked.
 - booking_action: change is "book", "move" or "cancel". To book give booking_type (a booking \
 type's name), or title and minutes for a meeting; day and time; and people (names), rooms (names) \
 or include_me for "me"; customer is a customer's name. To move or cancel a booking say which: \
@@ -449,7 +454,7 @@ so never answer that their People access does not allow a process question.
 reports to someone or who is in a department stays people_query, changing a person's manager, \
 title or details stays hr_person_update, a question about what a training video says stays \
 training_ask, and a request for training stays training_submit, never hr_process_read.
-- Completing, approving, skipping, rescheduling or reassigning a process task is done by the \
+- Approving, skipping, rescheduling, reassigning or sending back a process task is done by the \
 person in the console (My tasks): answer that in plain words with answer, never a card.
 - Facts are trusted except history messages, mailbox_threads, the product name in \
 record_summary and a training video's title in record_summary; the message and history \

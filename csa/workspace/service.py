@@ -56,7 +56,7 @@ from csa.hr.service import HrService
 from csa.metering.context import MeterContext, meter_context
 from csa.training import ask as training_ask
 from csa.training.access import can_manage
-from csa.workspace import email_batch, hr_people, hr_processes, stock
+from csa.workspace import email_batch, hr_people, hr_processes, hr_task_card, stock
 from csa.workspace.contracts import (
     MAX_STEPS,
     MAX_WORK_TTL,
@@ -76,6 +76,7 @@ from csa.workspace.contracts import (
     GuidanceProposal,
     GuidanceResult,
     HrProcessReadProposal,
+    HrTaskCompleteProposal,
     InboxDecisionProposal,
     InboxSummaryProposal,
     Language,
@@ -657,6 +658,10 @@ _TEXT: dict[str, dict[str, str]] = {
         "process_option": "{name} — {kind}, started {day}",
         "process_counter": "{n} of {total}",
         "process_which": "Which process do you mean?",
+        "task_complete_none": "You have no step of your own to mark done. Other steps are done "
+        "in My tasks.",
+        "task_complete_which": "Which step do you mean?",
+        "task_option_stored": "Step {n}",
         "process_open_head": "Open steps ({count}):",
         "process_open_none": "No open steps.",
         "process_closed": "This process is {status}.",
@@ -851,6 +856,10 @@ _TEXT: dict[str, dict[str, str]] = {
         "process_option": "{name} — {kind}, bermula {day}",
         "process_counter": "{n} daripada {total}",
         "process_which": "Proses yang mana satu?",
+        "task_complete_none": "Anda tiada langkah sendiri untuk ditandakan selesai. Langkah lain "
+        "dibuat dalam My tasks.",
+        "task_complete_which": "Langkah yang mana satu?",
+        "task_option_stored": "Langkah {n}",
         "process_open_head": "Langkah yang belum selesai ({count}):",
         "process_open_none": "Tiada langkah yang belum selesai.",
         "process_closed": "Proses ini telah {status}.",
@@ -2108,6 +2117,8 @@ async def _resolve(
         return await _plan(request, actor, client_id, thread_id, turn, steps, facts, registry)
     if isinstance(proposal, HrProcessReadProposal):
         return await _process_read(request, actor, client_id, proposal, facts)
+    if isinstance(proposal, HrTaskCompleteProposal):
+        return await _task_complete(request, actor, client_id, proposal, facts, registry)
     raise PlannerInvalidOutput()  # legacy guidance/order actions are never planned
 
 
@@ -2133,6 +2144,30 @@ async def _process_read(
         return _Planned(result=live, stored=stored)
     stored_answer = found.stored if isinstance(found.stored, AnswerResult) else None
     return _Planned(result=found.shown, stored=stored_answer)
+
+
+async def _task_complete(
+    request: Request,
+    actor: ConsoleActor,
+    client_id: UUID,
+    proposal: HrTaskCompleteProposal,
+    facts: PlannerFacts,
+    registry: ProposalRegistry,
+) -> _Planned:
+    """One confirm card for "mark my task done" for the caller's own open step, a pick list when
+    several are open, or one sentence (csa/workspace/hr_task_card.py). A pick list's stored copy
+    keeps no title or name, as for a process read."""
+    found = await hr_task_card.resolve_task_complete(
+        request, actor, client_id, proposal, facts, registry, _TEXT[facts.language]
+    )
+    if isinstance(found, PreparedProposal):
+        return _Planned(prepared=found)
+    if isinstance(found.shown, ClarificationProposal):
+        live, stored = _clarification(found.shown)
+        if isinstance(found.stored, ClarificationProposal):
+            _, stored = _clarification(found.stored)
+        return _Planned(result=live, stored=stored)
+    return _Planned(result=found.shown)
 
 
 async def _stock_read(

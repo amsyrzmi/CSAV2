@@ -3642,10 +3642,26 @@ def test_planner_prompt_keeps_neighbouring_actions_apart_from_process_reads() ->
         "training_submit, never hr_process_read."
     ) in flat
     assert (
-        "Completing, approving, skipping, rescheduling or reassigning a process task is done by "
+        "Approving, skipping, rescheduling, reassigning or sending back a process task is done by "
         "the person in the console (My tasks): answer that in plain words with answer, never a "
         "card."
     ) in flat
+
+
+def test_planner_prompt_has_one_small_bullet_for_marking_a_task_done() -> None:
+    assert SYSTEM_PROMPT.count("- hr_task_complete:") == 1
+    start = SYSTEM_PROMPT.index("- hr_task_complete:")
+    bullet = " ".join(SYSTEM_PROMPT[start : SYSTEM_PROMPT.index("\n- ", start + 1)].split())
+    for phrase in ("mark my task done", "tandakan tugasan saya sebagai selesai", "task is words"):
+        assert phrase in bullet, phrase
+    assert len(bullet) < 400  # the prompt is already long and the model is sensitive to it
+
+
+def test_a_task_card_is_a_stored_turn_action_of_its_own() -> None:
+    from csa.workspace.service import _STORED_ACTIONS
+
+    # A card turn is stored under its own action (migration 0637 allows it), not as an answer.
+    assert "hr_task_complete" not in _STORED_ACTIONS
 
 
 def test_malay_process_words_detect_malay_on_their_own() -> None:

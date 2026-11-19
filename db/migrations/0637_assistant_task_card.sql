@@ -1,0 +1,58 @@
+-- The staff assistant's "mark my task done" card (HR assistant slice 1c-ii):
+--   console_proposals_kind_check also allows 'hr_task' (one card that completes one of the caller's
+--   own process steps) and console_workspace_turns_action_check also allows 'hr_task_complete' (the
+--   planner's new action). Every kind and action already allowed is kept. The stored payload is the
+--   step id and its version only, and the stored result is the operation's receipt; no step title,
+--   person name or note goes on a card row or a turn row.
+-- How: as 0531 and 0542. The allowed values are read from each constraint as the database stores it
+--   (pg_get_constraintdef), a value is added when it is missing, and the constraint is built again
+--   from that list. No kind or action of another track is named here, so one this migration has
+--   never heard of is not lost. When the value this file adds is already there the constraint is
+--   left alone, so running the file again changes nothing.
+-- No tables, columns, policies, grants or roles change; no data changes. FORCE RLS stays off.
+-- Pre-check: both constraints exist and are plain lists of quoted values (0521, 0531, 0542); the
+--   migration stops with an error rather than guess if one is missing or reads differently.
+-- Rollback: DELETE FROM public.console_proposals WHERE kind = 'hr_task'; DELETE FROM
+--   public.console_workspace_turns WHERE action = 'hr_task_complete'; then drop both constraints and
+--   add them again with the lists they held before (read them with pg_get_constraintdef and leave
+--   the values above out). Finally delete the schema_migrations row for 0637, or the runner thinks
+--   it is still applied.
+
+DO $$
+DECLARE
+  spec text[];
+  def text;
+  allowed text[];
+  wanted text[];
+BEGIN
+  -- Each spec: table, constraint, column, and the values this file adds (comma separated).
+  FOREACH spec SLICE 1 IN ARRAY ARRAY[
+      ARRAY['console_proposals', 'console_proposals_kind_check', 'kind', 'hr_task'],
+      ARRAY['console_workspace_turns', 'console_workspace_turns_action_check', 'action',
+            'hr_task_complete']] LOOP
+    SELECT pg_catalog.pg_get_constraintdef(c.oid) INTO def
+      FROM pg_catalog.pg_constraint c
+     WHERE c.conrelid = ('public.' || spec[1])::regclass AND c.conname = spec[2];
+    IF def IS NULL THEN
+      RAISE EXCEPTION '0637: % is missing on public.%', spec[2], spec[1];
+    END IF;
+    IF def LIKE '%''''%' OR def !~ ('^CHECK \(\(' || spec[3] || ' = ANY \(ARRAY\[') THEN
+      RAISE EXCEPTION '0637: % does not read as a plain list of values: %', spec[2], def;
+    END IF;
+    SELECT array_agg(m[1] ORDER BY n) INTO allowed
+      FROM regexp_matches(def, '''([^'']+)''', 'g') WITH ORDINALITY AS t(m, n);
+    IF allowed IS NULL THEN
+      RAISE EXCEPTION '0637: % lists no values: %', spec[2], def;
+    END IF;
+    wanted := string_to_array(spec[4], ',');
+    IF NOT wanted <@ allowed THEN
+      EXECUTE format('ALTER TABLE public.%I DROP CONSTRAINT %I', spec[1], spec[2]);
+      EXECUTE format('ALTER TABLE public.%I ADD CONSTRAINT %I CHECK (%I IN (%s))',
+                     spec[1], spec[2], spec[3],
+                     (SELECT string_agg(quote_literal(v), ', ' ORDER BY n)
+                        FROM unnest(allowed || ARRAY(SELECT w FROM unnest(wanted) AS w
+                                                      WHERE NOT w = ANY (allowed)))
+                             WITH ORDINALITY AS u(v, n)));
+    END IF;
+  END LOOP;
+END $$;

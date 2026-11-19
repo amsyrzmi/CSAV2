@@ -63,6 +63,7 @@ export type ProposalKind =
   | "inbox_decision"
   | "subscription_action"
   | "hr_person"
+  | "hr_task"
   | "booking_action"
   | "plan";
 

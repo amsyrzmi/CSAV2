@@ -19,6 +19,7 @@ from csa.workspace.contracts import (
     EmailComposeProposal,
     GuidanceProposal,
     GuidanceResult,
+    HrTaskCompleteProposal,
     InboxDecisionProposal,
     LocalOrderSummary,
     NavigateProposal,
@@ -835,3 +836,21 @@ def test_hr_process_read_is_a_read_action_with_no_proposal_kind() -> None:
         {"action": "hr_process_read", "view": "overdue"}
     )
     assert parsed.action == "hr_process_read"
+
+
+def test_task_complete_takes_only_words_of_the_step_title_and_no_free_text() -> None:
+    assert HrTaskCompleteProposal.model_validate({"action": "hr_task_complete"}).task is None
+    picked = HrTaskCompleteProposal.model_validate({"action": "hr_task_complete", "task": "laptop"})
+    assert picked.task == "laptop"
+    for bad in (
+        {"action": "hr_task_complete", "task": ""},
+        {"action": "hr_task_complete", "task": 3},
+        {"action": "hr_task_complete", "note": "done early"},  # no note field: no free text
+        {"action": "hr_task_complete", "person": "Aina"},
+        {"action": "hr_task_complete", "task": "x" * 500},
+    ):
+        with pytest.raises(ValidationError):
+            HrTaskCompleteProposal.model_validate(bad)
+    assert "hr_task" in get_args(ProposalKind)
+    parsed = TypeAdapter(WorkspaceProposal).validate_python({"action": "hr_task_complete"})
+    assert isinstance(parsed, HrTaskCompleteProposal)
