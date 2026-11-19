@@ -10,7 +10,8 @@ automatic-check step, a pool step, or a step waiting for approval.
 
 The stored payload is the step id and its version only. The stored result is the operation's
 receipt. A pick list's stored copy keeps no title, name or date (turn rows are readable
-tenant-wide); the card itself, shown to its owner, names the step and the person.
+tenant-wide). The card itself names the step and the person (its summary and fields are kept on
+the card row and the turn row, as the people cards keep a person's name).
 """
 
 from __future__ import annotations
@@ -96,15 +97,14 @@ def _words_match(task: MyTask, wanted: str) -> bool:
 
 
 def _narrow(steps: list[MyTask], wanted: str) -> list[MyTask]:
-    """The steps a picked task id or typed title words name; every step when nothing was said or the
-    words match none of them (the user then picks)."""
+    """The steps a picked task id or typed title words name; every step when nothing was said,
+    and none when the words or the id match no open step (the caller then asks which)."""
     if not wanted:
         return steps
     target = as_id(wanted)
     if target is not None:
         return [task for task in steps if task.task_id == target]
-    matching = [task for task in steps if _words_match(task, wanted)]
-    return matching or steps
+    return [task for task in steps if _words_match(task, wanted)]
 
 
 async def resolve_task_complete(
@@ -143,7 +143,9 @@ async def resolve_task_complete(
             origin="assistant",
             language=facts.language,
         )
-    return _which(reader, chosen)
+    # Words or an id that name no open step (a step finished meanwhile, a guess) never make a card
+    # for some other step: the user picks from what is open.
+    return _which(reader, chosen or steps)
 
 
 def _say(markdown: str) -> ProcessAnswer:

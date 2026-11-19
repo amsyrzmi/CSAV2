@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -262,6 +262,8 @@ async def test_several_steps_ask_which_and_the_pick_gives_the_card(planned) -> N
     assert _fields(picked)["Step"] == "Collect the laptop"
     unknown = (await _ask(w, model, browser, task="nonsense")).json()["result"]
     assert unknown["action"] == "clarification" and len(unknown["options"]) == 2
+    gone = (await _ask(w, model, browser, task=str(uuid4()))).json()["result"]
+    assert gone["action"] == "clarification" and len(gone["options"]) == 2  # never a dead end
     # Malay: the same question in Malay, with the Malay title when the template has one.
     malay = (await _ask(w, model, browser, language="ms")).json()["result"]
     assert malay["question"] == "Langkah yang mana satu?"

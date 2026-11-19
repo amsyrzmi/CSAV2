@@ -2,8 +2,9 @@
 --   console_proposals_kind_check also allows 'hr_task' (one card that completes one of the caller's
 --   own process steps) and console_workspace_turns_action_check also allows 'hr_task_complete' (the
 --   planner's new action). Every kind and action already allowed is kept. The stored payload is the
---   step id and its version only, and the stored result is the operation's receipt; no step title,
---   person name or note goes on a card row or a turn row.
+--   step id and its version only, and the stored result is the operation's receipt; neither holds a
+--   title, name or note. The card's own text (summary and fields) names the step and the person and
+--   is kept on the card and turn rows, as the people cards do.
 -- How: as 0531 and 0542. The allowed values are read from each constraint as the database stores it
 --   (pg_get_constraintdef), a value is added when it is missing, and the constraint is built again
 --   from that list. No kind or action of another track is named here, so one this migration has

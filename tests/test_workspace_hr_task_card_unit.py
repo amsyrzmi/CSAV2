@@ -66,7 +66,7 @@ def test_typed_words_and_picked_ids_narrow_the_steps() -> None:
     assert hr_task_card._narrow(steps, "butiran") == [bank]  # the Malay title counts
     assert hr_task_card._narrow(steps, str(laptop.task_id)) == [laptop]
     assert hr_task_card._narrow(steps, str(uuid4())) == []  # a picked id that is no longer open
-    assert hr_task_card._narrow(steps, "nonsense") == steps  # nothing matched: ask which
+    assert hr_task_card._narrow(steps, "nonsense") == []  # nothing matched: the user picks
 
 
 def test_the_payload_is_exactly_a_task_id_and_a_version() -> None:
@@ -94,7 +94,8 @@ def test_the_card_names_the_step_and_what_happens_after_confirm() -> None:
     plain = hr_task_card._card(_task(), text, "en")
     assert plain.title == "Mark a step done"
     assert plain.summary == (
-        'Mark "Submit bank details" as done for Aina Rahman\'s onboarding. Nothing changes until you select Confirm.'
+        'Mark "Submit bank details" as done for Aina Rahman\'s onboarding. Nothing changes '
+        "until you select Confirm."
     )
     assert [(f.label, f.value) for f in plain.fields] == [
         ("Step", "Submit bank details"),
@@ -107,7 +108,9 @@ def test_the_card_names_the_step_and_what_happens_after_confirm() -> None:
     assert hr.fields[2].value == "None (overdue)" or hr.fields[2].value == "None"
     manager = hr_task_card._card(_task(approval_by="manager"), text, "en")
     assert manager.fields[-1].value == "The step then waits for approval by the manager."
-    custom = hr_task_card._card(_task(process_kind="custom", process_name="Safety induction"), text, "en")
+    custom = hr_task_card._card(
+        _task(process_kind="custom", process_name="Safety induction"), text, "en"
+    )
     assert custom.fields[1].value == "Aina Rahman (Safety induction)"
 
 

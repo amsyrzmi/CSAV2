@@ -14,8 +14,11 @@ step through the console's own `task.complete` operation. Nothing else changes.
 
 - Never approve, send back, skip, reschedule, reassign, cancel or close a step, and never complete
   one on someone else's behalf: those stay in the console (the 1c-i sentence is kept for them).
-- Never a note: the card carries no free text, so no personal text reaches the planner, the card
-  payload or the tenant-readable turn row (the payload is the step id and its version only).
+- Never a note: the action has no free-text field, so no personal text reaches the planner or the
+  card payload (the payload is the step id and its version only, the result the operation's
+  receipt). The card's own summary and fields name the step and the person and are kept on the card
+  and turn rows, tenant-readable, exactly as the people cards keep a person's name (the pick list's
+  stored copy keeps ids and a counter only).
 - Not an automatic-check step (the person's contact details, the account link, access removal):
   the console refuses them while the check fails, and `access_removed` is the system's. They get
   the console sentence.
