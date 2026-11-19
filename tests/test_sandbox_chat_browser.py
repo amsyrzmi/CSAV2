@@ -28,6 +28,8 @@ import httpx
 import pytest
 from playwright.async_api import Page, Route, async_playwright, expect
 
+from tests.shell_counts_stub import fulfill_shell_counts
+
 pytestmark = pytest.mark.asyncio
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -181,6 +183,8 @@ class Synthetic:
         return [path.split("?")[0] for method, path in self.requests if method == "POST"]
 
     async def route(self, route: Route) -> None:
+        if await fulfill_shell_counts(route):
+            return
         request = route.request
         tail = request.url.split("/console/v1/")[1]
         path = tail.split("?")[0]

@@ -8,6 +8,7 @@ every test in this file.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -23,6 +24,8 @@ from typing import Any
 import httpx
 import pytest
 from playwright.async_api import Page, async_playwright, expect
+
+from tests.shell_counts_stub import SHELL_COUNT_PATHS, shell_counts_answer
 
 pytestmark = pytest.mark.asyncio
 
@@ -229,15 +232,24 @@ async def open_page(
     role: str = "tenant_admin",
     logout: tuple[int, list[str]] | None = None,
     profile_status: int = 200,
+    shell_calls: list[str] | None = None,
+    count_status: int = 200,
+    page_errors: list[str] | None = None,
+    needs_us: int | None = None,
+    packages: list[dict[str, str]] | None = None,
 ) -> tuple[Any, Any, Page]:
     """A fresh context signed in as `role` with every package active, on `path`.
 
     `logout` is the status the stubbed sign-out answers with and a list that records each call.
     `profile_status` is what the tenant profile read answers with (the user menu's tenant line).
+    `shell_calls` records the path of every shell count poll; `count_status` is what both answer
+    with (200 gives the shared stub's zero counts). `page_errors` collects uncaught page errors
+    from the first request on. `needs_us` makes this module answer the queue counts itself with that
+    Needs us number (its own answer wins over the shared stub); `packages` replaces the active ones.
     """
     console.upstream.profile_status = profile_status
     console.upstream.me = make_me(role)
-    console.upstream.packages = ALL_PACKAGES
+    console.upstream.packages = ALL_PACKAGES if packages is None else packages
     playwright = await async_playwright().start()
     browser = await playwright.chromium.launch()
     context = await browser.new_context(viewport={"width": width, "height": height})
@@ -251,7 +263,19 @@ async def open_page(
 
     async def route(request_route: Any) -> None:
         path_only = request_route.request.url.split("/console/v1/")[1].split("?")[0]
-        if path_only == "auth/csrf":
+        shell_answer = shell_counts_answer(f"/console/v1/{path_only}")
+        if shell_answer is not None and needs_us is not None and path_only == "inbox/queue/counts":
+            shell_answer = {**shell_answer, "needs_us": needs_us}
+        if shell_answer is not None:
+            if shell_calls is not None:
+                shell_calls.append(f"/console/v1/{path_only}")
+            if count_status == 200:
+                await request_route.fulfill(json=shell_answer)
+            else:
+                await request_route.fulfill(
+                    status=count_status, json={"detail": "synthetic failure"}
+                )
+        elif path_only == "auth/csrf":
             await request_route.fulfill(json={"csrf_token": "synthetic-csrf"})
         elif path_only == "services":
             await request_route.fulfill(json=[])
@@ -264,6 +288,8 @@ async def open_page(
         else:
             await request_route.fulfill(status=404, json={"detail": "not stubbed"})
 
+    if page_errors is not None:
+        page.on("pageerror", lambda error: page_errors.append(str(error)))
     await page.route("**/console/v1/**", route)
     await page.goto(f"{console.base}{path}")
     return playwright, browser, page
@@ -809,5 +835,264 @@ async def test_sign_out_resolves_once_with_the_user_menu_open(console: Console, 
         sign_out = page.get_by_role("button", name="Sign out", exact=True)
         await expect(sign_out).to_have_count(1)
         await expect(sign_out).to_be_visible()
+    finally:
+        await close_page(playwright, browser)
+
+
+NOTIFICATION_COUNT, QUEUE_COUNTS = SHELL_COUNT_PATHS
+
+
+async def waited(check: Any, timeout: float = 15) -> None:
+    deadline = time.monotonic() + timeout
+    while not check():
+        assert time.monotonic() < deadline, "condition not met in time"
+        await asyncio.sleep(0.1)
+
+
+async def test_shell_polls_both_counts_on_load_and_again_after_a_route_change(
+    console: Console,
+) -> None:
+    calls: list[str] = []
+    playwright, browser, page = await open_page(console, "/portal/services", shell_calls=calls)
+    try:
+        await waited(lambda: NOTIFICATION_COUNT in calls and QUEUE_COUNTS in calls)
+        # The dev server runs effects twice on mount, so "on load" is at least one read each.
+        await page.wait_for_timeout(500)
+        before = calls.count(NOTIFICATION_COUNT)
+        queue_before = calls.count(QUEUE_COUNTS)
+        await page.get_by_role("link", name="Overview", exact=True).click()
+        await page.wait_for_url(f"{console.base}/portal")
+        await waited(
+            lambda: (
+                calls.count(NOTIFICATION_COUNT) > before
+                and calls.count(QUEUE_COUNTS) > queue_before
+            )
+        )
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_shell_polls_notifications_only_without_an_inbox_link(console: Console) -> None:
+    calls: list[str] = []
+    playwright, browser, page = await open_page(
+        console, "/portal/services", role="read_only", shell_calls=calls
+    )
+    try:
+        await waited(lambda: NOTIFICATION_COUNT in calls)
+        await page.wait_for_timeout(1000)
+        assert QUEUE_COUNTS not in calls
+        await expect(page.get_by_role("link", name="Customer inbox", exact=True)).to_have_count(0)
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_shell_makes_no_count_call_for_a_platform_admin(console: Console) -> None:
+    calls: list[str] = []
+    playwright, browser, page = await open_page(
+        console, "/", role="platform_admin", shell_calls=calls
+    )
+    try:
+        await expect(page.get_by_test_id("shell-user-menu")).to_be_visible()
+        await page.wait_for_timeout(1500)
+        await page.get_by_test_id("shell-user-menu").click()
+        await page.keyboard.press("Escape")
+        assert calls == []
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_a_failed_count_read_leaves_the_page_working_without_page_errors(
+    console: Console,
+) -> None:
+    calls: list[str] = []
+    errors: list[str] = []
+    playwright, browser, page = await open_page(
+        console, "/portal/services", shell_calls=calls, count_status=500, page_errors=errors
+    )
+    try:
+        await waited(lambda: NOTIFICATION_COUNT in calls)
+        await page.get_by_role("link", name="Overview", exact=True).click()
+        await page.wait_for_url(f"{console.base}/portal")
+        await expect(page.get_by_test_id("shell-user-menu")).to_be_visible()
+        await expect(page.get_by_role("link", name="Customer inbox", exact=True)).to_be_visible()
+        await page.wait_for_timeout(500)
+        assert errors == []
+    finally:
+        await close_page(playwright, browser)
+
+
+NO_SUPPORT_PACKAGES = [pkg for pkg in ALL_PACKAGES if pkg["key"] != "customer_support"]
+INBOX_NAME = "Customer inbox"
+
+
+async def test_expanded_rail_shows_the_needs_us_count_on_the_inbox_item(console: Console) -> None:
+    playwright, browser, page = await open_page(
+        console, "/portal/services", cookies={"fs-rail": "expanded"}, needs_us=12
+    )
+    try:
+        rail = page.get_by_test_id("shell-rail")
+        badge = rail.get_by_test_id("nav-badge-inbox")
+        await expect(badge).to_have_text("12")
+        await expect(badge).to_have_attribute("aria-hidden", "true")
+        link = rail.get_by_role("link", name="Customer inbox, 12 need your team", exact=True)
+        await expect(link).to_have_attribute("href", "/portal/inbox")
+        # Only Inbox carries one.
+        await expect(rail.get_by_test_id("nav-badge-inbox")).to_have_count(1)
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_a_count_of_zero_leaves_the_inbox_name_exact_and_no_badge(console: Console) -> None:
+    calls: list[str] = []
+    playwright, browser, page = await open_page(
+        console,
+        "/portal/services",
+        cookies={"fs-rail": "expanded"},
+        needs_us=0,
+        shell_calls=calls,
+    )
+    try:
+        await waited(lambda: QUEUE_COUNTS in calls)
+        await page.wait_for_timeout(500)
+        await expect(page.get_by_role("link", name=INBOX_NAME, exact=True)).to_have_count(1)
+        await expect(page.get_by_test_id("nav-badge-inbox")).to_have_count(0)
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_a_count_above_99_shows_99_plus_and_keeps_the_true_number_in_the_name(
+    console: Console,
+) -> None:
+    playwright, browser, page = await open_page(
+        console, "/portal/services", cookies={"fs-rail": "expanded"}, needs_us=150
+    )
+    try:
+        rail = page.get_by_test_id("shell-rail")
+        await expect(rail.get_by_test_id("nav-badge-inbox")).to_have_text("99+")
+        link = rail.get_by_role("link", name="Customer inbox, 150 need your team", exact=True)
+        await expect(link).to_have_count(1)
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_collapsed_rail_shows_the_pill_inside_the_item_without_overflow(
+    console: Console,
+) -> None:
+    playwright, browser, page = await open_page(console, "/portal/services", needs_us=150)
+    try:
+        rail = page.get_by_test_id("shell-rail")
+        badge = rail.get_by_test_id("nav-badge-inbox")
+        await expect(badge).to_have_text("99+")
+        link = rail.get_by_role("link", name="Customer inbox, 150 need your team", exact=True)
+        await expect(link).to_have_count(1)
+        link_box = await link.bounding_box()
+        badge_box = await badge.bounding_box()
+        rail_box = await rail.bounding_box()
+        assert link_box and badge_box and rail_box
+        assert badge_box["x"] >= link_box["x"] - 0.5
+        assert badge_box["x"] + badge_box["width"] <= link_box["x"] + link_box["width"] + 0.5
+        assert badge_box["y"] >= link_box["y"] - 0.5
+        assert badge_box["y"] + badge_box["height"] <= link_box["y"] + link_box["height"] + 0.5
+        assert rail_box["width"] == 56
+        # The visible label stays hidden from sight; the pill is the only thing painted there.
+        assert await rail.evaluate("(el) => el.scrollWidth <= el.clientWidth")
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_mobile_menu_row_shows_the_count_and_the_page_does_not_scroll_sideways(
+    console: Console,
+) -> None:
+    playwright, browser, page = await open_page(
+        console, "/portal/services", width=320, height=800, needs_us=150
+    )
+    try:
+        await expect(page.get_by_test_id("shell-rail")).to_be_hidden()
+        await page.get_by_test_id("shell-menu").click()
+        dialog = page.get_by_role("dialog")
+        badge = dialog.get_by_test_id("nav-badge-inbox")
+        await expect(badge).to_have_text("99+")
+        await expect(badge).to_have_attribute("aria-hidden", "true")
+        # The panel slides in from the right: while that runs, its content sits past the right edge
+        # and scrollWidth is wider than the box (measured 336 against 320 mid-slide, with the badge
+        # or without it). Measure once every animation has finished, as a slow CI host would show.
+        await dialog.evaluate(
+            "(el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished))"
+        )
+        link = dialog.get_by_role("link", name="Customer inbox, 150 need your team", exact=True)
+        link_box = await link.bounding_box()
+        badge_box = await badge.bounding_box()
+        assert link_box and badge_box
+        # Right-aligned on the row and inside it.
+        assert badge_box["x"] + badge_box["width"] <= link_box["x"] + link_box["width"] + 0.5
+        assert badge_box["x"] > link_box["x"] + link_box["width"] / 2
+        overflow = await page.evaluate(
+            "() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]"
+        )
+        assert overflow[0] <= overflow[1], overflow
+        assert await dialog.evaluate("(el) => el.scrollWidth <= el.clientWidth")
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_collapsed_and_expanded_rail_with_a_badge_do_not_scroll_sideways_at_each_width(
+    console: Console,
+) -> None:
+    playwright, browser, page = await open_page(console, "/portal/services", needs_us=150)
+    try:
+        await expect(page.get_by_test_id("nav-badge-inbox")).to_have_text("99+")
+        for rail in ("collapsed", "expanded"):
+            await page.context.add_cookies(
+                [{"name": "fs-rail", "value": rail, "url": console.base}]
+            )
+            await page.reload()
+            for width in WIDTHS:
+                await page.set_viewport_size({"width": width, "height": 800})
+                overflow = await page.evaluate(
+                    "() => [document.documentElement.scrollWidth,"
+                    " document.documentElement.clientWidth]"
+                )
+                assert overflow[0] <= overflow[1], f"{rail} {width}px: {overflow}"
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_a_read_only_member_makes_no_queue_call_and_sees_no_badge(console: Console) -> None:
+    calls: list[str] = []
+    playwright, browser, page = await open_page(
+        console,
+        "/portal/services",
+        role="read_only",
+        cookies={"fs-rail": "expanded"},
+        needs_us=12,
+        shell_calls=calls,
+    )
+    try:
+        await waited(lambda: NOTIFICATION_COUNT in calls)
+        await page.wait_for_timeout(1000)
+        assert QUEUE_COUNTS not in calls
+        await expect(page.get_by_test_id("nav-badge-inbox")).to_have_count(0)
+    finally:
+        await close_page(playwright, browser)
+
+
+async def test_a_company_without_customer_support_makes_no_queue_call_and_sees_no_badge(
+    console: Console,
+) -> None:
+    calls: list[str] = []
+    playwright, browser, page = await open_page(
+        console,
+        "/portal/services",
+        cookies={"fs-rail": "expanded"},
+        needs_us=12,
+        packages=NO_SUPPORT_PACKAGES,
+        shell_calls=calls,
+    )
+    try:
+        await waited(lambda: NOTIFICATION_COUNT in calls)
+        await page.wait_for_timeout(1000)
+        assert QUEUE_COUNTS not in calls
+        await expect(page.get_by_role("link", name=INBOX_NAME)).to_have_count(0)
+        await expect(page.get_by_test_id("nav-badge-inbox")).to_have_count(0)
     finally:
         await close_page(playwright, browser)

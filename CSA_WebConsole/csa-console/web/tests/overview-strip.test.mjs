@@ -7,7 +7,14 @@ const source = await readFile(new URL("../lib/overview-strip.ts", import.meta.ur
 const code = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
 }).outputText;
-const { stripParts, canSeeInboxCount, activeServiceCount } = await import(
+const {
+  stripParts,
+  canSeeInboxCount,
+  activeServiceCount,
+  NEEDS_US_LABEL,
+  OVERDUE_LABEL,
+  MINE_LABEL,
+} = await import(
   `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`
 );
 
@@ -71,4 +78,39 @@ test("active services count only active packages; unknown stays unknown", () => 
     ]),
     2,
   );
+});
+
+test("queue counts follow review in the agreed order, services last", () => {
+  assert.deepEqual(stripParts({ review: 2, services: 4, needsUs: 5, overdue: 1, mine: 3 }), [
+    { label: REVIEW, value: 2 },
+    { label: "Needs us", value: 5 },
+    { label: "Overdue", value: 1 },
+    { label: "Mine", value: 3 },
+    { label: SERVICES, value: 4 },
+  ]);
+  assert.deepEqual(stripParts({ review: null, services: null, needsUs: 0, overdue: 0, mine: 0 }), [
+    { label: "Needs us", value: 0 },
+    { label: "Overdue", value: 0 },
+    { label: "Mine", value: 0 },
+  ]);
+});
+
+test("the queue labels are exported", () => {
+  assert.equal(NEEDS_US_LABEL, "Needs us");
+  assert.equal(OVERDUE_LABEL, "Overdue");
+  assert.equal(MINE_LABEL, "Mine");
+});
+
+test("an absent, null, negative or NaN queue count is left out, never zero", () => {
+  assert.deepEqual(stripParts({ review: 1, services: 2, needsUs: null, overdue: undefined, mine: null }), [
+    { label: REVIEW, value: 1 },
+    { label: SERVICES, value: 2 },
+  ]);
+  assert.deepEqual(stripParts({ review: null, services: 2, needsUs: -1, overdue: Number.NaN, mine: "3" }), [
+    { label: SERVICES, value: 2 },
+  ]);
+  assert.deepEqual(stripParts({ review: null, services: 2, needsUs: 4, overdue: null, mine: null }), [
+    { label: "Needs us", value: 4 },
+    { label: SERVICES, value: 2 },
+  ]);
 });

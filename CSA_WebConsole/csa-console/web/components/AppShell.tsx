@@ -7,12 +7,14 @@ import type { Me } from "@/lib/identity-contracts";
 import { roleLabels } from "@/lib/identity-contracts";
 import type { HrNavItem } from "@/lib/hr-paths";
 import { navigationFor } from "@/lib/navigation";
+import { navBadges, wantsShellCounts } from "@/lib/shell-counts";
 import { writeRail, type RailState } from "@/lib/shell-state";
 import type { PackageState } from "@/lib/services-api";
 import { AssistantDock } from "@/components/console/AssistantDock";
 import { AssistantProvider } from "@/lib/assistant-conversation";
 import { useHrNav } from "@/components/console/hr/useHrNav";
 import { Rail } from "@/components/console/shell/Rail";
+import { useShellCounts } from "@/components/console/shell/useShellCounts";
 import type { ShellAccount } from "@/components/console/shell/UserMenu";
 import { TopBar } from "@/components/console/shell/TopBar";
 import { Notice } from "@/components/console/ui";
@@ -60,6 +62,17 @@ export function AppShell({
   const links = baseLinks.map((link) =>
     link.key === "hr" && hrItems?.length ? { ...link, children: hrItems } : link,
   );
+  // The one shell poll (notification and Needs us counts); the rail and the menu show the Inbox badge.
+  const counts = useShellCounts({
+    role: me.role,
+    hasInboxLink: baseLinks.some((link) => link.key === "inbox"),
+    path,
+  });
+  const badges = navBadges(counts);
+  // The bell is for company members only (read-only included); a platform admin has none.
+  const bell = wantsShellCounts(me.role, false).notifications
+    ? { unread: counts.unread, onMarked: counts.refresh }
+    : undefined;
   const [rail, setRail] = useState<RailState>(initialRail ?? "collapsed");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -107,6 +120,7 @@ export function AppShell({
         home={home}
         state={rail}
         onToggle={toggleRail}
+        badges={badges}
       />
       {/* A page marked `data-fill` (Overview) gets the whole window below the top bar: the
           column becomes exactly the viewport tall (never shorter than 30rem) and <main> fills
@@ -118,6 +132,8 @@ export function AppShell({
           home={home}
           fallbackTitle={admin ? "Platform administration" : "Workspace"}
           account={account}
+          badges={badges}
+          notifications={bell}
         />
         {/* Outside <main> and every dialog, so a failed sign-out is never hidden behind one. */}
         {error && (

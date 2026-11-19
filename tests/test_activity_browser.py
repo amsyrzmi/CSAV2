@@ -27,6 +27,7 @@ import httpx
 import pytest
 from playwright.async_api import Locator, Page, async_playwright, expect
 
+from tests.shell_counts_stub import fulfill_shell_counts
 from tests.test_services_browser import (
     WAIT,
     Upstream,
@@ -126,6 +127,8 @@ class Stub:
         return rows
 
     async def route(self, request_route: Any) -> None:
+        if await fulfill_shell_counts(request_route):
+            return
         request = request_route.request
         url = urlsplit(request.url)
         path = url.path.split("/console/v1/")[1]

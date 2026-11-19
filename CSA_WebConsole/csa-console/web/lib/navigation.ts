@@ -9,6 +9,8 @@ export type NavKey =
 /** A sub-page of a rail group; the testId names it for tests and the section bar. */
 export interface NavChild { key: string; label: string; href: string; testId?: string }
 export interface NavLink { href: string; label: string; key: NavKey; children?: NavChild[] }
+/** A count shown on a navigation item; separate from NavLink on purpose. */
+export type NavBadges = Partial<Record<NavKey, number>>;
 
 export type BusinessSection = "orders" | "products" | "stores";
 export type BookingsSection = "calendar" | "types" | "people";

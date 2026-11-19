@@ -32,6 +32,7 @@ from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, NameObject
 
 from tests import test_services_redesign_browser as services
+from tests.shell_counts_stub import fulfill_shell_counts
 from tests.test_services_browser import TENANT_PROFILE, WAIT, make_me
 from tests.test_services_redesign_browser import Site, with_browser
 
@@ -191,6 +192,8 @@ class Library:
         }
 
     async def route(self, request_route: Route) -> None:
+        if await fulfill_shell_counts(request_route):
+            return
         request = request_route.request
         url = urlsplit(request.url)
         if FILE_ROUTE.fullmatch(url.path):

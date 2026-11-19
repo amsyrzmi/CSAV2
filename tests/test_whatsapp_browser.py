@@ -19,6 +19,7 @@ import httpx
 import pytest
 from playwright.async_api import async_playwright, expect
 
+from tests.shell_counts_stub import fulfill_shell_counts
 from tests.test_services_browser import (
     ROOT,
     WAIT,
@@ -168,6 +169,8 @@ async def exercise(browser: Any, base: str, upstream: Upstream, tmp_path: Path) 
     everything = [conversation(WHATSAPP_ID, "whatsapp"), conversation(TELEGRAM_ID, "telegram")]
 
     async def route(request_route: Any) -> None:
+        if await fulfill_shell_counts(request_route):
+            return
         request = request_route.request
         path, _, query = request.url.split("/console/v1/")[1].partition("?")
         status, data = 200, None

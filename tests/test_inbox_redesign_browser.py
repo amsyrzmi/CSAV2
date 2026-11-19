@@ -30,6 +30,7 @@ from csa.inbox_queue.settings import InboxSettings
 from playwright.async_api import Page, async_playwright, expect
 from pydantic import ValidationError
 
+from tests.shell_counts_stub import QUEUE_COUNTS_PATH, fulfill_shell_counts, shell_counts_answer
 from tests.test_payments_browser import synthetic_png
 from tests.test_services_browser import (
     ROOT,
@@ -54,6 +55,8 @@ MASKED_PHONE = "••••0148"
 WIDTHS = (320, 390, 768, 1024, 1440)
 # The signed-in person's id, as make_me returns it; the stub's "me" for `assignee=me` and `mine`.
 ME_ID = "22222222-2222-4222-8222-222222222222"
+# A second company, whose conversations the first company's people cannot read.
+OTHER_TENANT = "99999999-9999-4999-8999-999999999999"
 PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2, "urgent": 3}
 # Every key a saved view's `filters` has when the server sends it back (its model's defaults).
 VIEW_DEFAULTS: dict[str, Any] = {
@@ -66,6 +69,7 @@ VIEW_DEFAULTS: dict[str, Any] = {
     "waiting_over": None,
     "channel": None,
     "sender": None,
+    "handled_by": None,
     "order": None,
 }
 QUEUE_FIELDS = {
@@ -180,6 +184,29 @@ def message(
     }
 
 
+def notification(
+    number: int,
+    minutes: int,
+    *,
+    key: str = "inbox.overdue",
+    params: dict[str, Any] | None = None,
+    link: dict[str, Any] | None = None,
+    read: bool = False,
+    priority: str = "normal",
+) -> dict[str, Any]:
+    """A console notification as the API sends it; `link` defaults to the NAMED conversation."""
+    return {
+        "id": f"b0000000-0000-4000-8000-{number:012d}",
+        "kind": key.split(".")[0],
+        "priority": priority,
+        "message_key": key,
+        "params": {"customer": "Aisyah Rahman", "waited_minutes": 45} if params is None else params,
+        "link": {"route": "inbox", "conversation": NAMED} if link is None else link,
+        "read_at": ago(minutes - 1) if read else None,
+        "created_at": ago(minutes),
+    }
+
+
 @dataclass
 class Inbox:
     """The synthetic inbox API one test sees; tests change it while the page polls."""
@@ -273,6 +300,12 @@ class Inbox:
     # Takeover and release calls ({"id", "action", "body"}), and when each conversation was read.
     handoffs: list[dict[str, Any]] = field(default_factory=list)
     detail_reads: list[float] = field(default_factory=list)
+    # The ids those reads asked for, and rows only the single-conversation read serves: `off_page`
+    # is a conversation the list's first page does not hold, `other_company` one that belongs to
+    # the company `OTHER_TENANT` (served only to a read made for it, as the server scopes reads).
+    detail_ids: list[str] = field(default_factory=list)
+    off_page: list[dict[str, Any]] = field(default_factory=list)
+    other_company: list[dict[str, Any]] = field(default_factory=list)
     # Rows sent as an older server sent them, without any queue field (list and detail).
     bare: set[str] = field(default_factory=set)
     # Bulk requests the page sent ({"body", "query"}). Answers are scripted in order: (status, json)
@@ -306,6 +339,19 @@ class Inbox:
     settings_script: dict[str, list[Any]] = field(default_factory=dict)
     settings_gates: dict[str, asyncio.Event] = field(default_factory=dict)
     role: str = "tenant_admin"
+    # The signed-in person's notifications (any order: the route sends newest first), the unread
+    # number the count answers when a test fixes it (else the unread rows), every notification call
+    # the page made ({"method", "path", "body", "query"}), scripted answers per route ("list",
+    # "count", "read"; used in order, (status, json)) and gates per route (that answer waits until
+    # the test sets the event). The shell polls the count, so a test asserts "at least" GETs.
+    notifications: list[dict[str, Any]] = field(default_factory=list)
+    unread_override: int | None = None
+    notification_calls: list[dict[str, Any]] = field(default_factory=list)
+    notification_script: dict[str, list[Any]] = field(default_factory=dict)
+    notification_gates: dict[str, asyncio.Event] = field(default_factory=dict)
+    # What the shell's own poll of `inbox/queue/counts` answers (all zeros when None). The list's
+    # tab counts (`counts_override`) are a different thing.
+    shell_queue_counts: dict[str, Any] | None = None
     # The companies a platform administrator picks from.
     clients: list[dict[str, Any]] = field(
         default_factory=lambda: [
@@ -355,6 +401,10 @@ class Inbox:
             items = [item for item in items if item["queue_reason"] in params["reason"]]
         if "topic" in params:
             items = [item for item in items if item["topic"] in params["topic"]]
+        if "handled_by" in params:
+            # "person" is the chats whose assistant is paused (`human_muted`), "assistant" the rest.
+            paused = params["handled_by"][0] == "person"
+            items = [item for item in items if bool(item["human_muted"]) is paused]
         if params.get("overdue") == ["true"]:
             now = datetime.now(UTC).isoformat()
             items = [item for item in items if item["due_at"] and item["due_at"] < now]
@@ -370,7 +420,9 @@ class Inbox:
         return self.messages[identifier]
 
     def detail(self, identifier: str) -> dict[str, Any] | None:
-        row = next((item for item in self.items if item["id"] == identifier), None)
+        row = next(
+            (item for item in [*self.items, *self.off_page] if item["id"] == identifier), None
+        )
         if row is None:
             return None
         # Only the single-conversation read carries the full number.
@@ -489,7 +541,64 @@ class Inbox:
         self.settings = {**saved.model_dump(), "version": saved.version + 1}
         return 200, dict(self.settings)
 
+    def unread_count(self) -> int:
+        """What the count route answers: the test's number, else the unread rows."""
+        if self.unread_override is not None:
+            return self.unread_override
+        return sum(1 for item in self.notifications if item["read_at"] is None)
+
+    def notification_posts(self) -> list[dict[str, Any]]:
+        """The mark-read calls the page made."""
+        return [call for call in self.notification_calls if call["method"] == "POST"]
+
+    async def notifications_route(self, request_route: Any) -> bool:
+        """The shell's polls (the notification routes and the Inbox queue counts), answered here so
+        this module's answer wins over the shared helper's. True when the request was one."""
+        request = request_route.request
+        path, _, query = request.url.split("/console/v1/")[1].partition("?")
+        if path == QUEUE_COUNTS_PATH.removeprefix("/console/v1/"):
+            answer = self.shell_queue_counts or shell_counts_answer(QUEUE_COUNTS_PATH)
+            await request_route.fulfill(status=200, json=answer)
+            return True
+        if path not in ("notifications", "notifications/count", "notifications/read"):
+            return False
+        route_key = {"notifications": "list", "notifications/count": "count"}.get(path, "read")
+        body = request.post_data_json if request.method == "POST" else None
+        self.notification_calls.append(
+            {"method": request.method, "path": path, "body": body, "query": query}
+        )
+        gate = self.notification_gates.get(route_key)
+        if gate is not None:
+            await gate.wait()
+        script = self.notification_script.get(route_key) or []
+        if script:
+            status, data = script.pop(0)
+        elif route_key == "count":
+            status, data = 200, {"unread": self.unread_count()}
+        elif route_key == "list":
+            params = parse_qs(query)
+            rows = sorted(self.notifications, key=lambda item: item["created_at"], reverse=True)
+            if params.get("unread") == ["true"]:
+                rows = [item for item in rows if item["read_at"] is None]
+            limit = int(params.get("limit", ["50"])[0])
+            status, data = 200, {"items": rows[:limit], "unread": self.unread_count()}
+        else:
+            wanted = (body or {}).get("ids")
+            marked = 0
+            for item in self.notifications:
+                if item["read_at"] is None and (wanted is None or item["id"] in wanted):
+                    item["read_at"] = datetime.now(UTC).isoformat()
+                    marked += 1
+            status, data = 200, {"updated": marked}
+        await request_route.fulfill(status=status, json=data)
+        return True
+
     async def route(self, request_route: Any) -> None:
+        # Our own answers first: the shared helper would answer the count with a zero.
+        if await self.notifications_route(request_route):
+            return
+        if await fulfill_shell_counts(request_route):
+            return
         request = request_route.request
         path, _, query = request.url.split("/console/v1/")[1].partition("?")
         status, data = 200, None
@@ -544,6 +653,10 @@ class Inbox:
                 status, data = self.assignees_status, {"detail": "synthetic directory outage"}
         elif path == "admin/clients" and request.method == "GET":
             data = self.clients
+        elif path == "hr/context" and request.method == "GET":
+            # The rail asks for the HR tabs on a page that names a company; unused here.
+            await request_route.fulfill(status=404, json={"detail": "not stubbed"})
+            return
         elif path == "inbox/settings" and request.method in ("GET", "PUT"):
             status, data = await self.settings_route(request, query)
         elif path == "inbox/views" or path.startswith("inbox/views/"):
@@ -613,7 +726,11 @@ class Inbox:
             data = {"items": self.thread(path.split("/")[2]), "next_cursor": None}
         elif path.startswith("inbox/conversations/"):
             self.detail_reads.append(time.monotonic())
-            data = self.detail(path.split("/")[2])
+            identifier = path.split("/")[2]
+            self.detail_ids.append(identifier)
+            data = self.detail(identifier)
+            if data is None and f"client_id={OTHER_TENANT}" in query:
+                data = next((r for r in self.other_company if r["id"] == identifier), None)
             if data is None:
                 status, data = 404, {"detail": "conversation not found"}
         elif path.startswith("media/"):

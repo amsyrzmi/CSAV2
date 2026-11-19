@@ -26,6 +26,7 @@ import pytest
 from playwright.async_api import Page, Request, expect
 
 from tests import test_services_redesign_browser as services
+from tests.shell_counts_stub import fulfill_shell_counts
 from tests.test_payments_browser import picture_file, synthetic_png
 from tests.test_services_browser import TENANT, TENANT_PROFILE, WAIT, make_me
 from tests.test_services_redesign_browser import Site, open_event, with_browser
@@ -276,6 +277,8 @@ class Stub:
         }
 
     async def route(self, request_route: Any) -> None:
+        if await fulfill_shell_counts(request_route):
+            return
         request = request_route.request
         parts = urlsplit("http://x/" + request.url.split("/console/v1/")[1])
         path = parts.path.lstrip("/")

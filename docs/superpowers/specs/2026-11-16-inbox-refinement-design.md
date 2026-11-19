@@ -423,6 +423,18 @@ scenario 3 (section 10): the owner of a chat is not notified the instant the cus
 since section 7.3 defines no kind for it and the return to Needs us happens in a SQL trigger; the owner
 is reminded by the new clock's `inbox.overdue` instead.
 
+Note (plan 2b, 2026-11-19): the bell and panel were built as in plan 2b
+(`docs/superpowers/plans/2026-11-19-inbox-refinement-2b-screen.md`), front end only. Decision 3 (panel
+look): the bell sits between the theme control and the user menu with a count badge ("99+" above 99); the
+panel is a popover of 24 rem showing up to 50 notifications, "Mark all as read", a "New" word on unread
+rows, and opening it does not mark anything read; a row with a known link marks only itself read on
+click and navigates, a row with an unknown route is plain text with a "Mark as read" button. Decision 4
+(copy per kind): the browser renders English text from `message_key` and `params` in
+`lib/notifications-view.ts`, naming the customer by display name only (fallback "A customer"), with the
+wait written as the staff chat writes it; an unknown key reads "New notification". One shell poll
+(60 s, visible tab, focus, route change) feeds the bell and the Inbox navigation badge; a platform admin
+gets neither.
+
 ### 7.3 Inbox reminders
 
 | Kind | Fires | To | Notes |

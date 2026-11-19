@@ -153,6 +153,8 @@ export type SavedView = { id: string; name: string; filters: Record<string, unkn
 
 export type ChannelFilter = "" | "whatsapp" | "telegram";
 export type SenderFilter = "" | "known" | "new";
+/** Who is handling the chat: the assistant, or a person (the assistant is paused for it). */
+export type HandledFilter = "" | "assistant" | "person";
 
 const INBOX = "/console/v1/inbox";
 
