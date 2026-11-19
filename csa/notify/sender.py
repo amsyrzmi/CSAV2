@@ -55,8 +55,63 @@ def quiet_until(quiet_hours: Any, priority: str, now: datetime) -> datetime | No
     return end_at.astimezone(UTC) if inside else None
 
 
+async def reap_stale_notifications(owner_pool: AsyncConnectionPool) -> int:
+    """Return stale ``delivering`` rows to ``pending`` (or ``dead`` at the cap); how many moved.
+
+    The query is channel-agnostic and idempotent, so the Telegram sender and the worker's mail
+    loop (:mod:`csa.notify.mail_sender`) both run it on their own cadence.
+    """
+    async with owner_pool.connection() as conn:
+        async with conn.transaction():
+            rows = await db.q.fetch_all(
+                "notify/reap_stale.sql",
+                (MAX_NOTIFICATION_ATTEMPTS, NOTIFICATION_STALE_SECONDS),
+                conn=conn,
+            )
+    for item in rows:
+        if item["status"] == "dead":
+            logger.error("staff_notification_dead", notification_id=str(item["id"]))
+    return len(rows)
+
+
+async def record_failure(
+    app_pool: AsyncConnectionPool, row: dict[str, Any], code: str, retry_after: int | None
+) -> None:
+    """Mark a claimed row pending with backoff, or dead at the attempt cap (any channel)."""
+    dead = row["attempts"] >= MAX_NOTIFICATION_ATTEMPTS
+    delay = (
+        min(3600, max(1, retry_after))
+        if retry_after is not None
+        else min(300, 2 ** max(row["attempts"] - 1, 0))
+    )
+    async with tx(app_pool, str(row["client_id"])) as conn:
+        await db.q.fetch_one(
+            "notify/mark_failed.sql",
+            (
+                "dead" if dead else "pending",
+                code,
+                datetime.now(UTC) + timedelta(seconds=delay),
+                row["id"],
+                row["client_id"],
+            ),
+            conn=conn,
+        )
+    logger.error(
+        "staff_notification_failed",
+        notification_id=str(row["id"]),
+        notification_event=row["event"],
+        error_code=code,
+        attempt=row["attempts"],
+        dead=dead,
+    )
+
+
 class StaffNotificationSender:
-    """Claim due notifications, send via Telegram, retry with backoff, dead-letter at the cap."""
+    """Claim due notifications, send via Telegram, retry with backoff, dead-letter at the cap.
+
+    Email targets are the worker's (``csa.notify.mail_sender``): ``notify/claim.sql`` skips them.
+    This sender is the only place ``expire_due`` runs.
+    """
 
     def __init__(
         self,
@@ -86,17 +141,7 @@ class StaffNotificationSender:
         return True
 
     async def reap(self) -> int:
-        async with self._owner_pool.connection() as conn:
-            async with conn.transaction():
-                rows = await db.q.fetch_all(
-                    "notify/reap_stale.sql",
-                    (MAX_NOTIFICATION_ATTEMPTS, NOTIFICATION_STALE_SECONDS),
-                    conn=conn,
-                )
-        for item in rows:
-            if item["status"] == "dead":
-                logger.error("staff_notification_dead", notification_id=str(item["id"]))
-        return len(rows)
+        return await reap_stale_notifications(self._owner_pool)
 
     async def _send(self, row: dict[str, Any]) -> None:
         client_id = row["client_id"]
@@ -207,32 +252,7 @@ class StaffNotificationSender:
                 raise RuntimeError("claimed notification is no longer delivering")
 
     async def _fail(self, row: dict[str, Any], code: str, retry_after: int | None) -> None:
-        dead = row["attempts"] >= MAX_NOTIFICATION_ATTEMPTS
-        delay = (
-            min(3600, max(1, retry_after))
-            if retry_after is not None
-            else min(300, 2 ** max(row["attempts"] - 1, 0))
-        )
-        async with tx(self._app_pool, str(row["client_id"])) as conn:
-            await db.q.fetch_one(
-                "notify/mark_failed.sql",
-                (
-                    "dead" if dead else "pending",
-                    code,
-                    datetime.now(UTC) + timedelta(seconds=delay),
-                    row["id"],
-                    row["client_id"],
-                ),
-                conn=conn,
-            )
-        logger.error(
-            "staff_notification_failed",
-            notification_id=str(row["id"]),
-            notification_event=row["event"],
-            error_code=code,
-            attempt=row["attempts"],
-            dead=dead,
-        )
+        await record_failure(self._app_pool, row, code, retry_after)
 
     async def do_work(self) -> bool:
         now = time.monotonic()

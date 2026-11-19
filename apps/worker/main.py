@@ -48,6 +48,7 @@ from csa.marketplace.processor import (
 from csa.marketplace.reads import LiveReadAccess, live_read_access
 from csa.metering.context import MeterContext, meter_context
 from csa.metering.meter import LedgerMeter
+from csa.notify.mail_sender import NotificationMailer, notification_mail_loop
 from csa.notify.notifier import notify
 from csa.speech import SpeechTranscriber, TranscriptionError
 from csa.storage.base import ObjectStore
@@ -848,6 +849,17 @@ async def main() -> None:  # pragma: no cover - process entrypoint
                 kb_ingest_loop(kb_processor, poll_seconds=settings.KB_INGEST_POLL_SECONDS)
             )
         )
+    # Staff email targets: sent from here, not by `delivery`. Runs with the relay off too (the
+    # rows retry); the loop logs once at start when it is off.
+    background.append(
+        asyncio.create_task(
+            notification_mail_loop(
+                NotificationMailer(
+                    owner_pool, app_pool, mailer, base_url=str(settings.PUBLIC_BASE_URL)
+                )
+            )
+        )
+    )
     marketplace_sync = register_marketplace_sync_task(settings, owner_pool, app_pool)
     if marketplace_sync is not None:
         background.append(marketplace_sync)
