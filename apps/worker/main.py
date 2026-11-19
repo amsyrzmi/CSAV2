@@ -37,6 +37,7 @@ from csa.graph.events import PostgresEventSink
 from csa.graph.retention import CheckpointPool, retention_loop
 from csa.graph.saver import build_checkpoint_pool, build_saver
 from csa.hr.reminders import hr_tasks_round
+from csa.inbox_queue.overdue_check import still_overdue
 from csa.inbox_queue.reminders import register_inbox_reminder_kinds
 from csa.jobs.runner import JobRunner, build_default_registry, jobs_loop
 from csa.marketplace.processor import (
@@ -855,7 +856,11 @@ async def main() -> None:  # pragma: no cover - process entrypoint
         asyncio.create_task(
             notification_mail_loop(
                 NotificationMailer(
-                    owner_pool, app_pool, mailer, base_url=str(settings.PUBLIC_BASE_URL)
+                    owner_pool,
+                    app_pool,
+                    mailer,
+                    base_url=str(settings.PUBLIC_BASE_URL),
+                    still_overdue=still_overdue,
                 )
             )
         )

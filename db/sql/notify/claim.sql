@@ -19,4 +19,4 @@ SET status = 'delivering',
     attempts = n.attempts + 1
 FROM candidate
 WHERE n.id = candidate.id
-RETURNING n.id, n.client_id, n.target_id, n.event, n.priority, n.payload, n.attempts;
+RETURNING n.id, n.client_id, n.target_id, n.event, n.priority, n.payload, n.attempts, n.held_at;

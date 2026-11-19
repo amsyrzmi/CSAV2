@@ -21,6 +21,7 @@ from csa.notify.failures import (
     report_dead_target_safely,
 )
 from csa.notify.format import format_notification as format_notification  # re-exported
+from csa.notify.recheck import OverdueCheck, cancelled_as_moved_on
 
 logger = structlog.get_logger(__name__)
 
@@ -134,7 +135,10 @@ class StaffNotificationSender:
     """Claim due notifications, send via Telegram, retry with backoff, dead-letter at the cap.
 
     Email targets are the worker's (``csa.notify.mail_sender``): ``notify/claim.sql`` skips them.
-    This sender is the only place ``expire_due`` runs.
+    This sender is the only place ``expire_due`` runs. With ``still_overdue`` (injected by the app,
+    so this package never imports the Inbox) a released ``inbox.overdue`` row, one quiet hours
+    held, is re-checked before it goes out and cancelled when the item has moved on
+    (:mod:`csa.notify.recheck`).
     """
 
     def __init__(
@@ -142,10 +146,13 @@ class StaffNotificationSender:
         owner_pool: AsyncConnectionPool,
         app_pool: AsyncConnectionPool,
         http_client: httpx.AsyncClient,
+        *,
+        still_overdue: OverdueCheck | None = None,
     ) -> None:
         self._owner_pool = owner_pool
         self._app_pool = app_pool
         self._http_client = http_client
+        self._still_overdue = still_overdue
         self._next_reap = 0.0
         self._next_expiry = 0.0
 
@@ -155,6 +162,8 @@ class StaffNotificationSender:
         if row is None:
             return False
         try:
+            if await cancelled_as_moved_on(self._app_pool, row, self._still_overdue):
+                return True
             await self._send(row)
         except TelegramDeliveryError as exc:
             await self._fail(row, exc.error_code, exc.retry_after_seconds)

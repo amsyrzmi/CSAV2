@@ -25,7 +25,8 @@ class Notice:
 
     ``message_key`` and ``params`` are rendered where the notice is shown (the browser for the
     console row, the server for the staff chat), so a notice never carries finished text.
-    ``staff_chat`` also sends it to the company staff chat as ``staff_event``.
+    ``staff_chat`` also sends it to the company staff chat as ``staff_event``; ``staff_params`` are
+    extra keys for that chat payload only (ids and times, never text), not shown on the console row.
     """
 
     recipients: tuple[UUID, ...]
@@ -36,6 +37,7 @@ class Notice:
     link: dict[str, Any]
     staff_chat: bool = False
     staff_event: str | None = None
+    staff_params: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

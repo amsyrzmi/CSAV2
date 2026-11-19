@@ -1,5 +1,5 @@
 -- Mail path: claims one due row whose target is an email target (the Telegram sender's claim.sql
--- skips those). Same returned columns as claim.sql.
+-- skips those). Same returned columns as claim.sql (held_at: set when quiet hours deferred the row).
 WITH candidate AS (
     SELECT n.id
     FROM public.staff_notifications AS n
@@ -18,4 +18,4 @@ SET status = 'delivering',
     attempts = n.attempts + 1
 FROM candidate
 WHERE n.id = candidate.id
-RETURNING n.id, n.client_id, n.target_id, n.event, n.priority, n.payload, n.attempts;
+RETURNING n.id, n.client_id, n.target_id, n.event, n.priority, n.payload, n.attempts, n.held_at;

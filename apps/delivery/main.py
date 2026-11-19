@@ -24,6 +24,7 @@ from csa.core.liveness import DELIVERY_ALIVE_PATH, liveness_loop
 from csa.core.settings import get_settings
 from csa.core.shutdown import run_until_signalled
 from csa.core.tenancy import tx
+from csa.inbox_queue.overdue_check import still_overdue
 from csa.media.attachments import image_asset_id
 from csa.notify.notifier import notify
 from csa.notify.sender import StaffNotificationSender
@@ -107,7 +108,9 @@ class DeliveryWorker:
         self._next_reap_at = 0.0
         self._next_global_send_at = 0.0
         self._next_chat_send_at: dict[str, float] = {}
-        self._staff = StaffNotificationSender(owner_pool, app_pool, http_client)
+        self._staff = StaffNotificationSender(
+            owner_pool, app_pool, http_client, still_overdue=still_overdue
+        )
 
     async def do_work(self) -> bool:
         """Run one delivery and periodically reclaim abandoned sends."""

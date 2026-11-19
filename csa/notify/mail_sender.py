@@ -17,13 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
 
 import structlog
-from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
 from csa.console.mailer import Mailer, OutgoingMail
@@ -35,6 +32,7 @@ from csa.notify.failures import (
     clear_target_failure_safely,
     report_dead_person_email_safely,
 )
+from csa.notify.recheck import OverdueCheck, cancelled_as_moved_on
 from csa.notify.sender import (
     MAX_NOTIFICATION_ATTEMPTS,
     NOTIFICATION_STALE_SECONDS,
@@ -45,8 +43,6 @@ from csa.notify.sender import (
 )
 
 logger = structlog.get_logger(__name__)
-
-OverdueCheck = Callable[[AsyncConnection[Any], UUID, dict[str, Any]], Awaitable[bool]]
 
 _REAP_EVERY_SECONDS = 60
 RECIPIENT_UNAVAILABLE = "recipient_unavailable"
@@ -150,8 +146,7 @@ class NotificationMailer:
         self._app_pool = app_pool
         self._mailer = mailer
         self._base_url = base_url
-        # Not used yet: a later task asks it whether an overdue conversation is still overdue
-        # before the person email goes out.
+        # Asked about a released inbox.overdue staff row before it is mailed (csa.notify.recheck).
         self._still_overdue = still_overdue
         self._next_reap = 0.0
 
@@ -186,6 +181,8 @@ class NotificationMailer:
         if row is None:
             return False
         try:
+            if await cancelled_as_moved_on(self._app_pool, row, self._still_overdue):
+                return True
             await self._send(row)
         except NotificationFailure as exc:
             await record_failure(self._app_pool, row, exc.error_code, exc.retry_after_seconds)

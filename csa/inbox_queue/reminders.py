@@ -370,6 +370,7 @@ def _notice(
     now: datetime,
     repeat: int | None = None,
     staff_chat: bool = False,
+    staff_params: dict[str, Any] | None = None,
 ) -> Notice:
     """The notice of ``kind``: its message key is the kind, its link opens the conversation."""
     params: dict[str, Any] = {
@@ -390,6 +391,7 @@ def _notice(
         link=_link(subject.conversation_id),
         staff_chat=staff_chat,
         staff_event=kind if staff_chat else None,
+        staff_params=staff_params,
     )
 
 
@@ -434,6 +436,9 @@ async def handle_overdue(ctx: HandlerContext) -> Decision:
         now=ctx.now,
         repeat=fired + 1,
         staff_chat=True,
+        # The staff-chat alert names its wait so a copy held by quiet hours can be re-checked when
+        # released (csa.inbox_queue.overdue_check); the console row does not need it.
+        staff_params={"cycle": item["needs_staff_since"].isoformat()},
     )
     again = None if last else ctx.now + timedelta(minutes=settings.repeat_minutes)
     return Decision(notices=(notice,), next_due_at=again)
