@@ -1013,6 +1013,12 @@ async def test_mobile_menu_row_shows_the_count_and_the_page_does_not_scroll_side
         badge = dialog.get_by_test_id("nav-badge-inbox")
         await expect(badge).to_have_text("99+")
         await expect(badge).to_have_attribute("aria-hidden", "true")
+        # The panel slides in from the right: while that runs, its content sits past the right edge
+        # and scrollWidth is wider than the box (measured 336 against 320 mid-slide, with the badge
+        # or without it). Measure once every animation has finished, as a slow CI host would show.
+        await dialog.evaluate(
+            "(el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished))"
+        )
         link = dialog.get_by_role("link", name="Customer inbox, 150 need your team", exact=True)
         link_box = await link.bounding_box()
         badge_box = await badge.bounding_box()

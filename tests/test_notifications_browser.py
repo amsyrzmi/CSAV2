@@ -97,10 +97,36 @@ async def open_bell(page: Page) -> Any:
     return panel(page)
 
 
+async def record_pushes(page: Page) -> None:
+    """Record the router's own history writes (path in `__pushed`, path and query in
+    `__pushed_urls`): the inbox screen may later drop the query from the address bar, so the
+    navigation itself is what a test asserts."""
+    await page.evaluate(
+        """() => {
+            window.__pushed = [];
+            window.__pushed_urls = [];
+            const push = history.pushState.bind(history);
+            history.pushState = (state, title, url) => {
+                const target = new URL(String(url), location.href);
+                window.__pushed.push(target.pathname);
+                window.__pushed_urls.push(target.pathname + target.search);
+                return push(state, title, url);
+            };
+        }"""
+    )
+
+
 async def eventually_pushed(page: Page, path: str) -> None:
     await page.wait_for_function(
         "(path) => (window.__pushed || []).includes(path)", arg=path, timeout=WAIT
     )
+
+
+async def posted(state: Inbox, expected: list[dict[str, Any]]) -> None:
+    """The mark-read bodies the server received. The call is a CSRF fetch, then the POST, fired
+    after the optimistic update, so wait for it to arrive before comparing."""
+    await eventually(lambda: len(state.notification_posts()) >= len(expected))
+    assert [call["body"] for call in state.notification_posts()] == expected
 
 
 async def inside_viewport(page: Page, locator: Any, label: str) -> None:
@@ -196,22 +222,11 @@ async def test_clicking_a_row_with_a_link_marks_it_and_opens_the_inbox(shell: Sh
         await expect(rows(page).nth(0).get_by_role("link")).to_have_attribute(
             "href", f"/portal/inbox?conversation={NEWCOMER}"
         )
-        # Record the router's own history writes: the inbox screen may later drop the query, so
-        # only the path of the navigation is asserted here.
-        await page.evaluate(
-            """() => {
-                window.__pushed = [];
-                const push = history.pushState.bind(history);
-                history.pushState = (state, title, url) => {
-                    window.__pushed.push(new URL(String(url), location.href).pathname);
-                    return push(state, title, url);
-                };
-            }"""
-        )
+        await record_pushes(page)
         await link.click()
         await eventually_pushed(page, "/portal/inbox")
         await expect(badge(page)).to_have_text("2", timeout=WAIT)
-        assert [call["body"] for call in state.notification_posts()] == [{"ids": [nid(2)]}]
+        await posted(state, [{"ids": [nid(2)]}])
         await expect(panel(page)).to_have_count(0)
         await expect(bell(page)).to_have_attribute("aria-label", "Notifications, 2 unread")
 
@@ -223,12 +238,18 @@ async def test_a_keyboard_activated_link_opens_the_inbox_and_focus_returns_to_th
     async with inbox_page(shell, state) as page:
         await expect(badge(page)).to_have_text("3", timeout=WAIT)
         await open_bell(page)
-        await rows(page).nth(2).get_by_role("link").focus()
+        link = rows(page).nth(2).get_by_role("link")
+        await expect(link).to_have_attribute("href", f"/portal/inbox?conversation={NAMED}")
+        await record_pushes(page)
+        await link.focus()
         await page.keyboard.press("Enter")
+        # The page already starts on the inbox, so the navigation itself is the proof.
+        await eventually_pushed(page, "/portal/inbox")
+        pushed = await page.evaluate("() => window.__pushed_urls")
+        assert f"/portal/inbox?conversation={NAMED}" in pushed, pushed
         await expect(panel(page)).to_have_count(0)
         await expect(bell(page)).to_be_focused()
-        assert page.url.split("?")[0].endswith("/portal/inbox")
-        assert [call["body"] for call in state.notification_posts()] == [{"ids": [nid(2)]}]
+        await posted(state, [{"ids": [nid(2)]}])
 
 
 async def test_a_row_without_a_usable_link_is_plain_text_with_a_mark_button(shell: Shell) -> None:
@@ -255,7 +276,7 @@ async def test_a_row_without_a_usable_link_is_plain_text_with_a_mark_button(shel
         await route.get_by_role("button", name="Mark as read").click()
         await expect(route.get_by_text("New", exact=True)).to_have_count(0)
         await expect(badge(page)).to_have_text("3", timeout=WAIT)
-        assert [call["body"] for call in state.notification_posts()] == [{"ids": [nid(3)]}]
+        await posted(state, [{"ids": [nid(3)]}])
         # The row is still there, now read, and the page did not move.
         await expect(rows(page)).to_have_count(5)
         assert page.url.endswith("/portal/inbox")
@@ -270,7 +291,7 @@ async def test_mark_all_posts_all_says_so_and_is_disabled_at_zero(shell: Shell) 
         await expect(mark_all).to_be_enabled()
         await mark_all.click()
         await expect(panel(page).get_by_role("status")).to_have_text(ALL_MARKED)
-        assert [call["body"] for call in state.notification_posts()] == [{"all": True}]
+        await posted(state, [{"all": True}])
         await expect(panel(page).get_by_text("New", exact=True)).to_have_count(0)
         await expect(mark_all).to_be_disabled()
         await expect(badge(page)).to_have_count(0, timeout=WAIT)
@@ -308,7 +329,7 @@ async def test_a_failed_mark_restores_the_row_and_says_so(shell: Shell) -> None:
         await expect(route.get_by_text("New", exact=True)).to_have_count(0)
         await expect(panel(page).get_by_text(MARK_FAILED, exact=True)).to_have_count(0)
         await expect(badge(page)).to_have_text("2", timeout=WAIT)
-        assert len(state.notification_posts()) == 2
+        await eventually(lambda: len(state.notification_posts()) == 2)
 
 
 async def test_a_failed_mark_all_restores_every_row(shell: Shell) -> None:
@@ -502,7 +523,7 @@ async def test_a_read_only_member_sees_and_uses_the_bell(shell: Shell) -> None:
         await open_bell(page)
         await rows(page).nth(1).get_by_role("button", name="Mark as read").click()
         await expect(badge(page)).to_have_text("2", timeout=WAIT)
-        assert [call["body"] for call in state.notification_posts()] == [{"ids": [nid(3)]}]
+        await posted(state, [{"ids": [nid(3)]}])
 
 
 async def test_a_platform_admin_has_no_bell_and_makes_no_notification_calls(
@@ -533,7 +554,7 @@ async def test_after_a_keyboard_mark_escape_still_closes_and_returns_focus(shell
         await page.keyboard.press("Escape")
         await expect(panel(page)).to_have_count(0)
         await expect(bell(page)).to_be_focused()
-        assert [call["body"] for call in state.notification_posts()] == [{"ids": [nid(3)]}]
+        await posted(state, [{"ids": [nid(3)]}])
 
 
 async def test_after_a_keyboard_mark_all_escape_still_closes_and_returns_focus(
@@ -551,7 +572,7 @@ async def test_after_a_keyboard_mark_all_escape_still_closes_and_returns_focus(
         await page.keyboard.press("Escape")
         await expect(panel(page)).to_have_count(0)
         await expect(bell(page)).to_be_focused()
-        assert [call["body"] for call in state.notification_posts()] == [{"all": True}]
+        await posted(state, [{"all": True}])
 
 
 async def test_overlapping_marks_where_the_first_fails_keep_the_unread_number_true(
@@ -584,8 +605,4 @@ async def test_overlapping_marks_where_the_first_fails_keep_the_unread_number_tr
         await expect(first.get_by_text("New", exact=True)).to_have_count(0)
         await expect(panel(page).get_by_role("button", name="Mark all as read")).to_be_disabled()
         await expect(badge(page)).to_have_count(0, timeout=WAIT)
-        assert [call["body"] for call in state.notification_posts()] == [
-            {"ids": [nid(3)]},
-            {"ids": [nid(2)]},
-            {"ids": [nid(3)]},
-        ]
+        await posted(state, [{"ids": [nid(3)]}, {"ids": [nid(2)]}, {"ids": [nid(3)]}])
