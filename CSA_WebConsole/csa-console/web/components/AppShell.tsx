@@ -7,7 +7,7 @@ import type { Me } from "@/lib/identity-contracts";
 import { roleLabels } from "@/lib/identity-contracts";
 import type { HrNavItem } from "@/lib/hr-paths";
 import { navigationFor } from "@/lib/navigation";
-import { navBadges } from "@/lib/shell-counts";
+import { navBadges, wantsShellCounts } from "@/lib/shell-counts";
 import { writeRail, type RailState } from "@/lib/shell-state";
 import type { PackageState } from "@/lib/services-api";
 import { AssistantDock } from "@/components/console/AssistantDock";
@@ -69,6 +69,10 @@ export function AppShell({
     path,
   });
   const badges = navBadges(counts);
+  // The bell is for company members only (read-only included); a platform admin has none.
+  const bell = wantsShellCounts(me.role, false).notifications
+    ? { unread: counts.unread, onMarked: counts.refresh }
+    : undefined;
   const [rail, setRail] = useState<RailState>(initialRail ?? "collapsed");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -129,6 +133,7 @@ export function AppShell({
           fallbackTitle={admin ? "Platform administration" : "Workspace"}
           account={account}
           badges={badges}
+          notifications={bell}
         />
         {/* Outside <main> and every dialog, so a failed sign-out is never hidden behind one. */}
         {error && (

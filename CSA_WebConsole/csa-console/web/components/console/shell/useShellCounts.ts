@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type { Me } from "@/lib/identity-contracts";
 import {
@@ -19,6 +19,7 @@ const REFRESH_MS = 60_000;
  * mount, every minute while the tab is visible, when the window regains focus and whenever the
  * route changes (`path`). A read that fails or answers something unexpected keeps the previous
  * number and says nothing; a platform admin makes no call at all. `null` means unknown.
+ * `refresh()` reads both again now (the bell calls it after marking notifications read).
  */
 export function useShellCounts({
   role,
@@ -28,10 +29,13 @@ export function useShellCounts({
   role: Me["role"] | null;
   hasInboxLink: boolean;
   path: string;
-}): ShellCounts {
+}): ShellCounts & { refresh: () => void } {
   const [counts, setCounts] = useState<ShellCounts>({ unread: null, needsUs: null });
   const wants = wantsShellCounts(role, hasInboxLink);
   const { notifications, queue } = wants;
+  // The effect's own read, reachable from outside (after a mark-read) without a second poll.
+  const reader = useRef<() => void>(() => undefined);
+  const refresh = useCallback(() => reader.current(), []);
 
   useEffect(() => {
     if (!notifications && !queue) return;
@@ -60,6 +64,7 @@ export function useShellCounts({
       }));
     }
 
+    reader.current = () => void load();
     void load();
     const timer = window.setInterval(() => {
       if (document.visibilityState !== "hidden") void load();
@@ -67,6 +72,7 @@ export function useShellCounts({
     const onFocus = () => void load();
     window.addEventListener("focus", onFocus);
     return () => {
+      reader.current = () => undefined;
       controller?.abort();
       window.clearInterval(timer);
       window.removeEventListener("focus", onFocus);
@@ -77,5 +83,6 @@ export function useShellCounts({
   return {
     unread: notifications ? counts.unread : null,
     needsUs: queue ? counts.needsUs : null,
+    refresh,
   };
 }

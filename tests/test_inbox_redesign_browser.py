@@ -181,6 +181,29 @@ def message(
     }
 
 
+def notification(
+    number: int,
+    minutes: int,
+    *,
+    key: str = "inbox.overdue",
+    params: dict[str, Any] | None = None,
+    link: dict[str, Any] | None = None,
+    read: bool = False,
+    priority: str = "normal",
+) -> dict[str, Any]:
+    """A console notification as the API sends it; `link` defaults to the NAMED conversation."""
+    return {
+        "id": f"b0000000-0000-4000-8000-{number:012d}",
+        "kind": key.split(".")[0],
+        "priority": priority,
+        "message_key": key,
+        "params": {"customer": "Aisyah Rahman", "waited_minutes": 45} if params is None else params,
+        "link": {"route": "inbox", "conversation": NAMED} if link is None else link,
+        "read_at": ago(minutes - 1) if read else None,
+        "created_at": ago(minutes),
+    }
+
+
 @dataclass
 class Inbox:
     """The synthetic inbox API one test sees; tests change it while the page polls."""
@@ -307,6 +330,16 @@ class Inbox:
     settings_script: dict[str, list[Any]] = field(default_factory=dict)
     settings_gates: dict[str, asyncio.Event] = field(default_factory=dict)
     role: str = "tenant_admin"
+    # The signed-in person's notifications (any order: the route sends newest first), the unread
+    # number the count answers when a test fixes it (else the unread rows), every notification call
+    # the page made ({"method", "path", "body", "query"}), scripted answers per route ("list",
+    # "count", "read"; used in order, (status, json)) and gates per route (that answer waits until
+    # the test sets the event). The shell polls the count, so a test asserts "at least" GETs.
+    notifications: list[dict[str, Any]] = field(default_factory=list)
+    unread_override: int | None = None
+    notification_calls: list[dict[str, Any]] = field(default_factory=list)
+    notification_script: dict[str, list[Any]] = field(default_factory=dict)
+    notification_gates: dict[str, asyncio.Event] = field(default_factory=dict)
     # The companies a platform administrator picks from.
     clients: list[dict[str, Any]] = field(
         default_factory=lambda: [
@@ -490,7 +523,58 @@ class Inbox:
         self.settings = {**saved.model_dump(), "version": saved.version + 1}
         return 200, dict(self.settings)
 
+    def unread_count(self) -> int:
+        """What the count route answers: the test's number, else the unread rows."""
+        if self.unread_override is not None:
+            return self.unread_override
+        return sum(1 for item in self.notifications if item["read_at"] is None)
+
+    def notification_posts(self) -> list[dict[str, Any]]:
+        """The mark-read calls the page made."""
+        return [call for call in self.notification_calls if call["method"] == "POST"]
+
+    async def notifications_route(self, request_route: Any) -> bool:
+        """The notification routes, answered here so this module's answer wins over the shared
+        shell helper's zero count. True when the request was one of them."""
+        request = request_route.request
+        path, _, query = request.url.split("/console/v1/")[1].partition("?")
+        if path not in ("notifications", "notifications/count", "notifications/read"):
+            return False
+        route_key = {"notifications": "list", "notifications/count": "count"}.get(path, "read")
+        body = request.post_data_json if request.method == "POST" else None
+        self.notification_calls.append(
+            {"method": request.method, "path": path, "body": body, "query": query}
+        )
+        gate = self.notification_gates.get(route_key)
+        if gate is not None:
+            await gate.wait()
+        script = self.notification_script.get(route_key) or []
+        if script:
+            status, data = script.pop(0)
+        elif route_key == "count":
+            status, data = 200, {"unread": self.unread_count()}
+        elif route_key == "list":
+            params = parse_qs(query)
+            rows = sorted(self.notifications, key=lambda item: item["created_at"], reverse=True)
+            if params.get("unread") == ["true"]:
+                rows = [item for item in rows if item["read_at"] is None]
+            limit = int(params.get("limit", ["50"])[0])
+            status, data = 200, {"items": rows[:limit], "unread": self.unread_count()}
+        else:
+            wanted = (body or {}).get("ids")
+            marked = 0
+            for item in self.notifications:
+                if item["read_at"] is None and (wanted is None or item["id"] in wanted):
+                    item["read_at"] = datetime.now(UTC).isoformat()
+                    marked += 1
+            status, data = 200, {"updated": marked}
+        await request_route.fulfill(status=status, json=data)
+        return True
+
     async def route(self, request_route: Any) -> None:
+        # Our own answers first: the shared helper would answer the count with a zero.
+        if await self.notifications_route(request_route):
+            return
         if await fulfill_shell_counts(request_route):
             return
         request = request_route.request

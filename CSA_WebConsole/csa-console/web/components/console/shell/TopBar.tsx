@@ -6,6 +6,7 @@ import { activeNav } from "@/lib/shell-state";
 import { MitoMark } from "@/components/brand/Mito";
 import { MobileMenu } from "./MobileMenu";
 import { SignOutButton, UserMenu, type ShellAccount } from "./UserMenu";
+import { NotificationBell } from "./NotificationBell";
 import { ThemeControl } from "./ThemeControl";
 
 /**
@@ -20,6 +21,7 @@ export function TopBar({
   fallbackTitle,
   account,
   badges,
+  notifications,
 }: {
   links: NavLink[];
   path: string;
@@ -27,12 +29,14 @@ export function TopBar({
   fallbackTitle: string;
   account: ShellAccount;
   badges?: NavBadges;
+  /** Present only for a company member: the shell's unread count and the re-read after a mark. */
+  notifications?: { unread: number | null; onMarked: () => void };
 }) {
   const title = activeNav(links, path)?.label ?? fallbackTitle;
   return (
     <header
       data-testid="shell-topbar"
-      className="flex items-center gap-3 border-b border-[color:var(--fs-border)] px-4 py-3 sm:px-8"
+      className="relative flex items-center gap-3 border-b border-[color:var(--fs-border)] px-4 py-3 sm:px-8"
     >
       <MobileMenu links={links} path={path} badges={badges} />
       <Link href={home} aria-label="Mito home" className="flex items-center lg:hidden">
@@ -42,6 +46,9 @@ export function TopBar({
         {title}
       </p>
       <ThemeControl />
+      {notifications && (
+        <NotificationBell unread={notifications.unread} onMarked={notifications.onMarked} />
+      )}
       <UserMenu account={account} />
       <SignOutButton
         account={account}
