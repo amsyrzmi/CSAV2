@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRef } from "react";
 import { agoText, isUnread, notificationLink, renderNotification } from "@/lib/notifications-view";
 import type { NotificationItem } from "@/lib/notifications-view";
 import { companyDateTime } from "@/lib/inbox-queue";
@@ -83,20 +84,34 @@ export function NotificationPanel({
   onNavigate: () => void;
 }) {
   const now = new Date(loadedAt);
+  const panel = useRef<HTMLDivElement>(null);
+  // A mark takes away the focused button (the row is read) or disables it (Mark all as read), and
+  // focus would fall to the page, so Escape would no longer close the panel. Park it on the panel.
+  function parkFocus() {
+    const root = panel.current;
+    if (root && root !== document.activeElement && root.contains(document.activeElement)) {
+      root.focus();
+    }
+  }
   return (
     <div
+      ref={panel}
+      tabIndex={-1}
       id={id}
       role="group"
       aria-label="Notifications"
       data-testid="shell-notifications-panel"
-      className={`${POPOVER} w-[24rem] max-w-[calc(100vw-2rem)] max-md:right-4`}
+      className={`${POPOVER} w-[24rem] max-w-[calc(100vw-2rem)] max-md:right-4 focus:outline-none`}
     >
       <div className="flex items-center justify-between gap-2 px-3 py-1">
         <p className="min-w-0 text-[length:var(--fs-text-sm)] font-semibold">Notifications</p>
         <button
           type="button"
           disabled={state !== "ready" || unread === 0}
-          onClick={onMarkAll}
+          onClick={() => {
+            parkFocus();
+            onMarkAll();
+          }}
           className={`${TEXT_BUTTON} shrink-0`}
         >
           Mark all as read
@@ -158,7 +173,10 @@ export function NotificationPanel({
                     {open && (
                       <button
                         type="button"
-                        onClick={() => onMarkRead([item.id])}
+                        onClick={() => {
+                          parkFocus();
+                          onMarkRead([item.id]);
+                        }}
                         className={`${TEXT_BUTTON} -ml-3`}
                       >
                         Mark as read

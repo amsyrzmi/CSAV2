@@ -13,6 +13,8 @@ export type NotificationsState = "idle" | "loading" | "ready" | "failed";
 
 export const MARK_FAILED = "Could not mark as read. Try again.";
 export const ALL_MARKED = "All marked as read.";
+/** The most ids the server takes in one mark-read call. */
+const IDS_MAX = 200;
 
 /** The rows of an answer that look like notifications; a malformed row is dropped, not shown. */
 function readPage(body: unknown): { items: NotificationItem[]; unread: number } | null {
@@ -113,20 +115,41 @@ export function useNotifications({
           .filter((item) => isUnread(item) && (wanted === null || wanted.has(item.id)))
           .map((item) => [item.id, item]),
       );
+      // The server takes at most IDS_MAX ids a call; a longer list goes in several calls, and
+      // only the rows of a call that failed are put back.
+      const chunks: Array<string[] | "all"> = [];
+      if (target === "all") chunks.push("all");
+      else for (let at = 0; at < target.length; at += IDS_MAX) chunks.push(target.slice(at, at + IDS_MAX));
       setError("");
       setNotice("");
       setItems(applyRead(before, target, new Date().toISOString()));
       setUnread(unreadAfter(beforeUnread, before, target));
-      try {
-        await post("/console/v1/notifications/read", target === "all" ? { all: true } : { ids: target });
-      } catch {
-        setItems((now) => now.map((item) => changed.get(item.id) ?? item));
-        setUnread(beforeUnread);
+      const done = await Promise.all(
+        chunks.map((chunk) =>
+          post("/console/v1/notifications/read", chunk === "all" ? { all: true } : { ids: chunk }).then(
+            () => true,
+            () => false,
+          ),
+        ),
+      );
+      const failed = chunks.filter((_, index) => !done[index]);
+      if (failed.length > 0) {
+        const restore = new Map<string, NotificationItem>();
+        let restored = 0;
+        for (const chunk of failed) {
+          // What this call took off the unread number, added back (other marks may have run since).
+          restored += beforeUnread - unreadAfter(beforeUnread, before, chunk);
+          for (const id of chunk === "all" ? changed.keys() : chunk) {
+            const row = changed.get(id);
+            if (row) restore.set(id, row);
+          }
+        }
+        setItems((now) => now.map((item) => restore.get(item.id) ?? item));
+        setUnread((now) => now + restored);
         setError(MARK_FAILED);
-        return false;
       }
-      onMarked();
-      return true;
+      if (failed.length < chunks.length) onMarked();
+      return failed.length === 0;
     },
     [onMarked],
   );

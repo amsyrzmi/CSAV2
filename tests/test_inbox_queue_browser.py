@@ -3545,7 +3545,8 @@ class GatedInbox(Inbox):
     async def route(self, request_route: Any) -> None:
         url = request_route.request.url
         probe = "/console/v1/inbox/conversations?" in url and "limit=1" in url
-        if "/queue/" in url:
+        # The shell's own count poll (`inbox/queue/counts`) is not a queue action.
+        if "/queue/" in url and not url.partition("?")[0].endswith("/queue/counts"):
             self.arrived.append(url.partition("?")[0].rsplit("/", 1)[-1])
             if self.action_gate is not None:
                 await self.action_gate.wait()

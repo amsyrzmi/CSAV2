@@ -30,7 +30,7 @@ from csa.inbox_queue.settings import InboxSettings
 from playwright.async_api import Page, async_playwright, expect
 from pydantic import ValidationError
 
-from tests.shell_counts_stub import fulfill_shell_counts
+from tests.shell_counts_stub import QUEUE_COUNTS_PATH, fulfill_shell_counts, shell_counts_answer
 from tests.test_payments_browser import synthetic_png
 from tests.test_services_browser import (
     ROOT,
@@ -340,6 +340,9 @@ class Inbox:
     notification_calls: list[dict[str, Any]] = field(default_factory=list)
     notification_script: dict[str, list[Any]] = field(default_factory=dict)
     notification_gates: dict[str, asyncio.Event] = field(default_factory=dict)
+    # What the shell's own poll of `inbox/queue/counts` answers (all zeros when None). The list's
+    # tab counts (`counts_override`) are a different thing.
+    shell_queue_counts: dict[str, Any] | None = None
     # The companies a platform administrator picks from.
     clients: list[dict[str, Any]] = field(
         default_factory=lambda: [
@@ -534,10 +537,14 @@ class Inbox:
         return [call for call in self.notification_calls if call["method"] == "POST"]
 
     async def notifications_route(self, request_route: Any) -> bool:
-        """The notification routes, answered here so this module's answer wins over the shared
-        shell helper's zero count. True when the request was one of them."""
+        """The shell's polls (the notification routes and the Inbox queue counts), answered here so
+        this module's answer wins over the shared helper's. True when the request was one."""
         request = request_route.request
         path, _, query = request.url.split("/console/v1/")[1].partition("?")
+        if path == QUEUE_COUNTS_PATH.removeprefix("/console/v1/"):
+            answer = self.shell_queue_counts or shell_counts_answer(QUEUE_COUNTS_PATH)
+            await request_route.fulfill(status=200, json=answer)
+            return True
         if path not in ("notifications", "notifications/count", "notifications/read"):
             return False
         route_key = {"notifications": "list", "notifications/count": "count"}.get(path, "read")

@@ -97,6 +97,12 @@ async def open_bell(page: Page) -> Any:
     return panel(page)
 
 
+async def eventually_pushed(page: Page, path: str) -> None:
+    await page.wait_for_function(
+        "(path) => (window.__pushed || []).includes(path)", arg=path, timeout=WAIT
+    )
+
+
 async def inside_viewport(page: Page, locator: Any, label: str) -> None:
     box = await locator.bounding_box()
     width = (await page_width(page))["inner"]
@@ -187,8 +193,20 @@ async def test_clicking_a_row_with_a_link_marks_it_and_opens_the_inbox(shell: Sh
         await expect(rows(page).nth(0).get_by_role("link")).to_have_attribute(
             "href", f"/portal/inbox?conversation={NEWCOMER}"
         )
+        # Record the router's own history writes: the inbox screen may later drop the query, so
+        # only the path of the navigation is asserted here.
+        await page.evaluate(
+            """() => {
+                window.__pushed = [];
+                const push = history.pushState.bind(history);
+                history.pushState = (state, title, url) => {
+                    window.__pushed.push(new URL(String(url), location.href).pathname);
+                    return push(state, title, url);
+                };
+            }"""
+        )
         await link.click()
-        await page.wait_for_url(re.compile(rf"/portal/inbox\?conversation={NAMED}"))
+        await eventually_pushed(page, "/portal/inbox")
         await expect(badge(page)).to_have_text("2", timeout=WAIT)
         assert [call["body"] for call in state.notification_posts()] == [{"ids": [nid(2)]}]
         await expect(panel(page)).to_have_count(0)
@@ -480,3 +498,76 @@ async def test_a_platform_admin_has_no_bell_and_makes_no_notification_calls(
         await expect(bell(page)).to_have_count(0)
         await expect(badge(page)).to_have_count(0)
         assert state.notification_calls == []
+
+
+async def test_after_a_keyboard_mark_escape_still_closes_and_returns_focus(shell: Shell) -> None:
+    state = seeded()
+    async with inbox_page(shell, state) as page:
+        await expect(badge(page)).to_have_text("3", timeout=WAIT)
+        await open_bell(page)
+        route = rows(page).nth(1)
+        await route.get_by_role("button", name="Mark as read").focus()
+        await page.keyboard.press("Enter")
+        # The focused button is gone with the row's unread state; focus stays inside the panel.
+        await expect(route.get_by_text("New", exact=True)).to_have_count(0)
+        await expect(badge(page)).to_have_text("2", timeout=WAIT)
+        assert await panel(page).evaluate("el => el.contains(document.activeElement)")
+        await page.keyboard.press("Escape")
+        await expect(panel(page)).to_have_count(0)
+        await expect(bell(page)).to_be_focused()
+        assert [call["body"] for call in state.notification_posts()] == [{"ids": [nid(3)]}]
+
+
+async def test_after_a_keyboard_mark_all_escape_still_closes_and_returns_focus(
+    shell: Shell,
+) -> None:
+    state = seeded()
+    async with inbox_page(shell, state) as page:
+        await expect(badge(page)).to_have_text("3", timeout=WAIT)
+        await open_bell(page)
+        mark_all = panel(page).get_by_role("button", name="Mark all as read")
+        await mark_all.focus()
+        await page.keyboard.press("Enter")
+        await expect(mark_all).to_be_disabled()
+        assert await panel(page).evaluate("el => el.contains(document.activeElement)")
+        await page.keyboard.press("Escape")
+        await expect(panel(page)).to_have_count(0)
+        await expect(bell(page)).to_be_focused()
+        assert [call["body"] for call in state.notification_posts()] == [{"all": True}]
+
+
+async def test_overlapping_marks_where_the_first_fails_keep_the_unread_number_true(
+    shell: Shell,
+) -> None:
+    # Two plain unread rows. Mark A is sent, then mark B while A is still out; A fails, B works.
+    # The rollback must add back only A's unread (not reset to the number before B), so when A
+    # is marked again nothing is left unread and "Mark all as read" is disabled.
+    state = Inbox()
+    state.notifications = [
+        notification(1, 120, read=True),
+        notification(2, 20, key="hr.something_new", params={}, link={}),
+        notification(3, 10, key="hr.something_new", params={}, link={}),
+    ]
+    state.notification_script["read"] = [FAILURE]
+    state.notification_gates["read"] = gate = asyncio.Event()
+    async with inbox_page(shell, state) as page:
+        await expect(badge(page)).to_have_text("2", timeout=WAIT)
+        await open_bell(page)
+        first, second = rows(page).nth(0), rows(page).nth(1)
+        await first.get_by_role("button", name="Mark as read").click()
+        await second.get_by_role("button", name="Mark as read").click()
+        await eventually(lambda: len(state.notification_posts()) == 2)
+        gate.set()
+        await expect(panel(page).get_by_text(MARK_FAILED, exact=True)).to_be_visible(timeout=WAIT)
+        await expect(first.get_by_text("New", exact=True)).to_have_count(1)
+        await expect(second.get_by_text("New", exact=True)).to_have_count(0)
+        await expect(badge(page)).to_have_text("1", timeout=WAIT)
+        await first.get_by_role("button", name="Mark as read").click()
+        await expect(first.get_by_text("New", exact=True)).to_have_count(0)
+        await expect(panel(page).get_by_role("button", name="Mark all as read")).to_be_disabled()
+        await expect(badge(page)).to_have_count(0, timeout=WAIT)
+        assert [call["body"] for call in state.notification_posts()] == [
+            {"ids": [nid(3)]},
+            {"ids": [nid(2)]},
+            {"ids": [nid(3)]},
+        ]
