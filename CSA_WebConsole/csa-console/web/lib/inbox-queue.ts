@@ -367,7 +367,13 @@ export function rowMeta(item: Conversation, now: number, me: { userId: string | 
   const priority = item.priority === "urgent" || item.priority === "high"
     ? { text: item.priority === "urgent" ? ("Urgent" as const) : ("High" as const) }
     : null;
-  const reason = needsUs && item.queue_reason ? REASON_LABELS[item.queue_reason] : null;
+  // Needs us rows say why they need us (the state wins over the pause). A waiting or snoozed row
+  // the assistant is paused for says "Taken over", so the list shows whose turn it is.
+  const takenOver = item.human_muted === true
+    && (item.queue_status === "waiting_customer" || item.queue_status === "snoozed");
+  const reason = needsUs && item.queue_reason
+    ? REASON_LABELS[item.queue_reason]
+    : takenOver ? REASON_LABELS.manual : null;
 
   let assignee: RowMeta["assignee"] = null;
   if (item.assignee_id) {

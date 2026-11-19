@@ -892,6 +892,48 @@ async def test_rows_show_only_the_labels_that_apply(shell: Shell) -> None:
             )
 
 
+async def test_taken_over_shows_on_waiting_and_snoozed_rows_the_assistant_is_paused_for(
+    shell: Shell,
+) -> None:
+    state = queue_inbox()
+    # Staff took over a waiting row and a snoozed row; a second waiting row is not paused.
+    row_of(state, NEWCOMER).update(human_muted=True, owned_by="human")
+    row_of(state, LONG).update(human_muted=True, owned_by="human")
+    # Resolved and assistant rows never carry it, even with the flag set.
+    row_of(state, RESOLVED_ROW).update(human_muted=True, owned_by="human")
+    row_of(state, BOT_ROW).update(human_muted=True, owned_by="human")
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        # The Mine tab holds the waiting row staff took over: the word shows there too.
+        await tab(page, "mine").click()
+        await expect(row(page, NEWCOMER)).to_be_visible(timeout=WAIT)
+        mine = await row_parts(page, NEWCOMER)
+        assert mine["reason"]["text"] == "Taken over", mine
+        assert mine["state"]["text"] == "Waiting on customer", mine
+        # Needs us rows keep their own reason; the state wins over the pause.
+        await tab(page, "needs_us").click()
+        await expect(row(page, NAMED)).to_be_visible(timeout=WAIT)
+        assert (await row_parts(page, NAMED))["reason"]["text"] == "Escalated"
+        await tab(page, "all").click()
+        await rows_loaded(page, 7)
+        for identifier, state_text in ((NEWCOMER, "Waiting on customer"), (LONG, "Snoozed")):
+            found = await row_parts(page, identifier)
+            assert found["reason"]["text"] == "Taken over", (identifier, found)
+            assert found["state"]["text"].startswith(state_text), (identifier, found)
+            # The row's accessible name reads the state and then the reason, in words.
+            name = await row(page, identifier).inner_text()
+            assert re.search(state_text + r".*Taken over", name, re.S), (identifier, name)
+        # Rows the assistant answers, resolved rows and unpaused rows have no reason part.
+        for identifier in (RESOLVED_ROW, BOT_ROW):
+            assert "reason" not in await row_parts(page, identifier), identifier
+        row_of(state, NEWCOMER).update(human_muted=False, owned_by=None)
+        await page.reload()
+        await rows_loaded(page, 3)
+        await tab(page, "waiting").click()
+        await expect(row(page, NEWCOMER)).to_be_visible(timeout=WAIT)
+        assert "reason" not in await row_parts(page, NEWCOMER)
+
+
 # A fixed browser clock, so the wait and the times are exact: 10:00 on 17 Nov 2026 in +08:00.
 NOW = datetime(2026, 11, 17, 2, 0, tzinfo=UTC)
 CLOCK_ROW = "a0000000-0000-4000-8000-000000000101"

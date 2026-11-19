@@ -331,6 +331,28 @@ test("rowMeta for the other states", () => {
   assert.equal(bot.reason, null);
 });
 
+test("rowMeta says Taken over on Waiting and Snoozed rows the assistant is paused for", () => {
+  const reason = (over) => rowMeta(item({ needs_staff_since: null, due_at: null, queue_reason: null, ...over }), NOW, me).reason;
+  const snoozedUntil = "2026-11-19T01:00:00Z";
+  assert.equal(reason({ queue_status: "waiting_customer", human_muted: true }), "Taken over");
+  assert.equal(reason({ queue_status: "snoozed", snoozed_until: snoozedUntil, human_muted: true }), "Taken over");
+  // Not paused, or the flag absent: no reason.
+  assert.equal(reason({ queue_status: "waiting_customer", human_muted: false }), null);
+  assert.equal(reason({ queue_status: "snoozed", snoozed_until: snoozedUntil, human_muted: false }), null);
+  assert.equal(reason({ queue_status: "waiting_customer", human_muted: undefined }), null);
+  // Resolved and bot rows never carry it.
+  assert.equal(reason({ queue_status: "resolved", human_muted: true }), null);
+  assert.equal(reason({ queue_status: "bot", human_muted: true }), null);
+  // Needs us keeps its own reason: the state wins over the pause.
+  const needsUs = rowMeta(item({ queue_reason: "customer_message", human_muted: true }), NOW, me);
+  assert.equal(needsUs.reason, "Customer wrote");
+  assert.equal(rowMeta(item({ queue_reason: "escalation", human_muted: true }), NOW, me).reason, "Escalated");
+  // The state label does not change and no new key appears.
+  const waiting = rowMeta(item({ queue_status: "waiting_customer", queue_reason: null, human_muted: true }), NOW, me);
+  assert.deepEqual(waiting.state, { tone: "neutral", text: "Waiting on customer" });
+  assert.deepEqual(Object.keys(waiting).sort(), ["assignee", "due", "priority", "reason", "state"]);
+});
+
 test("rowMeta snooze time is read in +08:00 whatever the UTC day", () => {
   const snoozed = (snoozed_until) => rowMeta(item({
     queue_status: "snoozed", queue_reason: null, snoozed_until,
