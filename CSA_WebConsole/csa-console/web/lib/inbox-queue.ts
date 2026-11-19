@@ -10,6 +10,7 @@ import type {
   BulkOutcome,
   ChannelFilter,
   Conversation,
+  HandledFilter,
   Priority,
   QueueActionName,
   QueueCounts,
@@ -40,6 +41,8 @@ export interface QueueFilters {
   topic: Topic[];
   channel: ChannelFilter;
   sender: SenderFilter;
+  /** "person" keeps the chats where the assistant is paused; "assistant" the others. */
+  handledBy: HandledFilter;
   overdue: boolean;
   /** Minutes a `needs_staff` item has waited at least. */
   waitingOver: number | null;
@@ -95,7 +98,7 @@ export const TABS: readonly QueueTab[] = [
 function emptyFilters(): QueueFilters {
   return {
     state: [], assignee: "", priorityMin: "", reason: [], topic: [], channel: "", sender: "",
-    overdue: false, waitingOver: null,
+    handledBy: "", overdue: false, waitingOver: null,
   };
 }
 
@@ -134,6 +137,7 @@ export function queueListQuery(o: {
   for (const topic of f.topic) parts.push(`topic=${enc(topic)}`);
   if (f.channel) parts.push(`channel=${enc(f.channel)}`);
   if (f.sender) parts.push(`sender=${enc(f.sender)}`);
+  if (f.handledBy) parts.push(`handled_by=${enc(f.handledBy)}`);
   if (f.overdue) parts.push("overdue=true");
   if (f.waitingOver !== null) parts.push(`waiting_over=${enc(String(f.waitingOver))}`);
   parts.push(`order=${enc(o.order)}`);
@@ -692,6 +696,9 @@ export function activeFilterChips(filters: QueueFilters, tab: QueueTabId): { key
   if (filters.sender && filters.sender !== own.sender) {
     chips.push({ key: "sender", label: filters.sender === "known" ? "Customers" : "New senders" });
   }
+  if (filters.handledBy && filters.handledBy !== own.handledBy) {
+    chips.push({ key: "handled_by", label: filters.handledBy === "person" ? "Assistant paused" : "Assistant answering" });
+  }
   if (filters.overdue && !own.overdue) chips.push({ key: "overdue", label: "Overdue only" });
   if (filters.waitingOver !== null && filters.waitingOver !== own.waitingOver) {
     chips.push({ key: "waiting_over", label: `Waiting longer than ${duration(filters.waitingOver * 60_000)}` });
@@ -710,6 +717,7 @@ export function withoutChip(filters: QueueFilters, tab: QueueTabId, key: string)
     case "topic": return { ...filters, topic: filters.topic.filter((topic) => topic !== value) };
     case "channel": return { ...filters, channel: own.channel };
     case "sender": return { ...filters, sender: own.sender };
+    case "handled_by": return { ...filters, handledBy: own.handledBy };
     case "overdue": return { ...filters, overdue: own.overdue };
     case "waiting_over": return { ...filters, waitingOver: own.waitingOver };
     default: return filters;
@@ -739,6 +747,7 @@ export type ViewFilters = {
   waiting_over?: number;
   channel?: "telegram" | "whatsapp";
   sender?: "known" | "new";
+  handled_by?: "assistant" | "person";
   order?: QueueOrder;
 };
 
@@ -754,6 +763,7 @@ export function filtersToView(filters: QueueFilters, order: QueueOrder): ViewFil
   if (filters.waitingOver !== null) view.waiting_over = filters.waitingOver;
   if (filters.channel) view.channel = filters.channel;
   if (filters.sender) view.sender = filters.sender;
+  if (filters.handledBy) view.handled_by = filters.handledBy;
   view.order = order;
   return view;
 }
@@ -829,6 +839,10 @@ export function viewToFilters(view: Pick<SavedView, "filters">): ViewRead {
       case "sender":
         if (value !== "known" && value !== "new") return { supported: false };
         filters.sender = value;
+        break;
+      case "handled_by":
+        if (value !== "person" && value !== "assistant") return { supported: false };
+        filters.handledBy = value;
         break;
       case "order":
         if (typeof value !== "string" || !ORDER_VALUES.includes(value)) return { supported: false };

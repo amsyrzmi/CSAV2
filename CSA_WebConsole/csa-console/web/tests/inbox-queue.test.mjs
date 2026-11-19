@@ -77,11 +77,11 @@ test("each tab carries its server filters, default order and count key", () => {
 test("tabFilters lays the tab's own filters over empty ones", () => {
   assert.deepEqual(tabFilters("all"), {
     state: [], assignee: "", priorityMin: "", reason: [], topic: [], channel: "", sender: "",
-    overdue: false, waitingOver: null,
+    handledBy: "", overdue: false, waitingOver: null,
   });
   assert.deepEqual(tabFilters("mine"), {
     state: ["needs_staff", "waiting_customer"], assignee: "me", priorityMin: "", reason: [], topic: [],
-    channel: "", sender: "", overdue: false, waitingOver: null,
+    channel: "", sender: "", handledBy: "", overdue: false, waitingOver: null,
   });
   assert.equal(tabFilters("overdue").overdue, true);
   // Each call returns fresh arrays, so a caller cannot change the tab definition.
@@ -115,14 +115,22 @@ test("the tenant query comes first and the other parameters follow in a fixed or
   const filters = {
     state: ["needs_staff", "snoozed"], assignee: "u-9", priorityMin: "high",
     reason: ["escalation", "manual"], topic: ["complaint", "payment"], channel: "whatsapp",
-    sender: "new", overdue: true, waitingOver: 90,
+    sender: "new", handledBy: "person", overdue: true, waitingOver: 90,
   };
   assert.equal(
     queueListQuery({ tenantQuery: "client_id=abc", filters, order: "waiting", q: "ali" }),
     `${BASE}?client_id=abc&state=needs_staff&state=snoozed&assignee=u-9&priority_min=high`
       + "&reason=escalation&reason=manual&topic=complaint&topic=payment&channel=whatsapp&sender=new"
-      + "&overdue=true&waiting_over=90&order=waiting&q=ali",
+      + "&handled_by=person&overdue=true&waiting_over=90&order=waiting&q=ali",
   );
+});
+
+test("handled_by is sent only when set, with either value", () => {
+  assert.equal(listFor("all", { filters: { ...tabFilters("all"), handledBy: "person" } }),
+    `${BASE}?handled_by=person&order=activity`);
+  assert.equal(listFor("all", { filters: { ...tabFilters("all"), handledBy: "assistant" } }),
+    `${BASE}?handled_by=assistant&order=activity`);
+  assert.equal(listFor("all", { filters: { ...tabFilters("all"), handledBy: "" } }), `${BASE}?order=activity`);
 });
 
 test("search under two characters is dropped, two or more is sent trimmed and encoded", () => {
@@ -157,12 +165,12 @@ test("search text with reserved or non-ASCII characters is encoded (moved from i
 test("removing a chip puts that value back to the tab's own and leaves the rest", () => {
   const filters = {
     ...tabFilters("needs_us"), assignee: "u-9", priorityMin: "high", reason: ["escalation", "manual"],
-    topic: ["payment"], channel: "telegram", sender: "new", overdue: true, waitingOver: 60,
+    topic: ["payment"], channel: "telegram", sender: "new", handledBy: "person", overdue: true, waitingOver: 60,
   };
   const keys = activeFilterChips(filters, "needs_us").map((chip) => chip.key);
   assert.deepEqual(keys, [
     "assignee:u-9", "priority", "reason:escalation", "reason:manual", "topic:payment", "channel", "sender",
-    "overdue", "waiting_over",
+    "handled_by", "overdue", "waiting_over",
   ]);
   assert.equal(withoutChip(filters, "needs_us", "assignee:u-9").assignee, "");
   assert.equal(withoutChip(filters, "needs_us", "priority").priorityMin, "");
@@ -170,6 +178,7 @@ test("removing a chip puts that value back to the tab's own and leaves the rest"
   assert.deepEqual(withoutChip(filters, "needs_us", "topic:payment").topic, []);
   assert.equal(withoutChip(filters, "needs_us", "channel").channel, "");
   assert.equal(withoutChip(filters, "needs_us", "sender").sender, "");
+  assert.equal(withoutChip(filters, "needs_us", "handled_by").handledBy, "");
   assert.equal(withoutChip(filters, "needs_us", "overdue").overdue, false);
   assert.equal(withoutChip(filters, "needs_us", "waiting_over").waitingOver, null);
   // Every chip removed one by one leaves exactly the tab's own filters.
@@ -539,7 +548,7 @@ test("a tab's own filters make no chips", () => {
 test("activeFilterChips lists what goes beyond the tab, in words", () => {
   const filters = {
     ...tabFilters("all"), assignee: "me", priorityMin: "high", reason: ["escalation", "customer_message"],
-    topic: ["complaint"], channel: "telegram", sender: "known", overdue: true, waitingOver: 30,
+    topic: ["complaint"], channel: "telegram", sender: "known", handledBy: "person", overdue: true, waitingOver: 30,
   };
   assert.deepEqual(activeFilterChips(filters, "all"), [
     { key: "assignee:me", label: "Assigned to me" },
@@ -549,6 +558,7 @@ test("activeFilterChips lists what goes beyond the tab, in words", () => {
     { key: "topic:complaint", label: "Topic: Complaint" },
     { key: "channel", label: "Channel: Telegram" },
     { key: "sender", label: "Customers" },
+    { key: "handled_by", label: "Assistant paused" },
     { key: "overdue", label: "Overdue only" },
     { key: "waiting_over", label: "Waiting longer than 30m" },
   ]);
@@ -561,6 +571,8 @@ test("activeFilterChips word variants", () => {
   assert.deepEqual(chips({ priorityMin: "urgent" }), [{ key: "priority", label: "Priority urgent" }]);
   assert.deepEqual(chips({ channel: "whatsapp" }), [{ key: "channel", label: "Channel: WhatsApp" }]);
   assert.deepEqual(chips({ sender: "new" }), [{ key: "sender", label: "New senders" }]);
+  assert.deepEqual(chips({ handledBy: "person" }), [{ key: "handled_by", label: "Assistant paused" }]);
+  assert.deepEqual(chips({ handledBy: "assistant" }), [{ key: "handled_by", label: "Assistant answering" }]);
   assert.deepEqual(chips({ waitingOver: 150 }), [{ key: "waiting_over", label: "Waiting longer than 2h 30m" }]);
 });
 
@@ -587,12 +599,12 @@ test("filters become the API's view keys and leave out what is not set", () => {
   const view = filtersToView({
     state: ["needs_staff", "waiting_customer"], assignee: "me", priorityMin: "high",
     reason: ["escalation"], topic: ["payment", "booking"], channel: "whatsapp", sender: "new",
-    overdue: true, waitingOver: 90,
+    handledBy: "assistant", overdue: true, waitingOver: 90,
   }, "priority");
   assert.deepEqual(view, {
     state: ["needs_staff", "waiting_customer"], assignee: "me", priority_min: "high",
     reason: ["escalation"], topic: ["payment", "booking"], overdue: true, waiting_over: 90,
-    channel: "whatsapp", sender: "new", order: "priority",
+    channel: "whatsapp", sender: "new", handled_by: "assistant", order: "priority",
   });
   assert.deepEqual(filtersToView(tabFilters("all"), "activity"), { order: "activity" });
 });
@@ -613,16 +625,25 @@ test("a view reads back into the filters and order it was saved from", () => {
   const full = {
     state: ["needs_staff"], assignee: "11111111-1111-1111-1111-111111111111", priorityMin: "urgent",
     reason: ["manual", "held_reply"], topic: ["complaint"], channel: "telegram", sender: "known",
-    overdue: true, waitingOver: 30,
+    handledBy: "person", overdue: true, waitingOver: 30,
   };
   const back = viewToFilters({ id: "v", name: "n", created_at: "x", filters: filtersToView(full, "priority") });
   assert.deepEqual(back, { supported: true, filters: full, order: "priority" });
+  // Either handled_by value round trips on its own; unset stays out of the view.
+  for (const handledBy of ["person", "assistant"]) {
+    const only = { ...tabFilters("all"), handledBy };
+    const view = filtersToView(only, "activity");
+    assert.equal(view.handled_by, handledBy);
+    assert.deepEqual(viewToFilters({ id: "v", name: "n", created_at: "x", filters: view }),
+      { supported: true, filters: only, order: "activity" });
+  }
+  assert.equal("handled_by" in filtersToView(tabFilters("all"), "activity"), false);
 });
 
 test("a stored view in the server's full shape reads back, nulls and empty lists meaning not set", () => {
   const back = viewToFilters({ id: "v", name: "n", created_at: "x", filters: {
     state: ["snoozed"], assignee: null, priority_min: null, reason: [], topic: [], overdue: false,
-    waiting_over: null, channel: null, sender: null, order: null,
+    waiting_over: null, channel: null, sender: null, handled_by: null, order: null,
   } });
   assert.deepEqual(back, { supported: true, filters: tabFilters("snoozed"), order: "activity" });
 });
@@ -644,6 +665,9 @@ test("a view with a key or a value this screen does not know is marked unsupport
   assert.deepEqual(mk({ limit: 10 }), { supported: false });
   assert.deepEqual(mk({ state: ["archived"] }), { supported: false });
   assert.deepEqual(mk({ order: "random" }), { supported: false });
+  assert.deepEqual(mk({ handled_by: "robot" }), { supported: false });
+  assert.deepEqual(mk({ handled_by: true }), { supported: false });
+  assert.deepEqual(mk({ handled_by: "" }), { supported: false });
   assert.deepEqual(mk({ waiting_over: "soon" }), { supported: false });
   assert.deepEqual(mk({ overdue: "yes" }), { supported: false });
   assert.deepEqual(mk(null), { supported: false });
@@ -966,9 +990,18 @@ test("viewChoice opens a view on the most specific tab whose own filters it hold
   // The server's full shape (defaults present) reads the same as the stored one.
   const full = mk({
     state: ["needs_staff"], assignee: null, priority_min: null, reason: [], topic: [], overdue: false,
-    waiting_over: null, channel: null, sender: null, order: null,
+    waiting_over: null, channel: null, sender: null, handled_by: null, order: null,
   });
   assert.deepEqual([full.tab, full.order], ["needs_us", "due"]);
+  // handled_by is never a tab filter: the view opens on its tab with the chip, and an unknown value is not supported.
+  const paused = mk({ state: ["needs_staff"], handled_by: "person", order: "due" });
+  assert.equal(paused.tab, "needs_us");
+  assert.equal(paused.filters.handledBy, "person");
+  assert.deepEqual(activeFilterChips(paused.filters, paused.tab).map((c) => c.key), ["handled_by"]);
+  assert.equal(paused.key, viewKey(paused.filters, paused.order));
+  assert.notEqual(paused.key, full.key);
+  assert.equal(mk({ handled_by: "assistant" }).tab, "all");
+  assert.deepEqual(mk({ handled_by: "robot" }), { supported: false });
 });
 
 // ---- Task 9: each tab's empty sentence and whether the counts show any work ----

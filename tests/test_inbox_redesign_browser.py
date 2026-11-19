@@ -69,6 +69,7 @@ VIEW_DEFAULTS: dict[str, Any] = {
     "waiting_over": None,
     "channel": None,
     "sender": None,
+    "handled_by": None,
     "order": None,
 }
 QUEUE_FIELDS = {
@@ -400,6 +401,10 @@ class Inbox:
             items = [item for item in items if item["queue_reason"] in params["reason"]]
         if "topic" in params:
             items = [item for item in items if item["topic"] in params["topic"]]
+        if "handled_by" in params:
+            # "person" is the chats whose assistant is paused (`human_muted`), "assistant" the rest.
+            paused = params["handled_by"][0] == "person"
+            items = [item for item in items if bool(item["human_muted"]) is paused]
         if params.get("overdue") == ["true"]:
             now = datetime.now(UTC).isoformat()
             items = [item for item in items if item["due_at"] and item["due_at"] < now]

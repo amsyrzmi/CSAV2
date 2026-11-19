@@ -2,7 +2,7 @@
 
 import { useId, type ReactNode } from "react";
 import { secondary } from "@/components/console/ui";
-import type { ChannelFilter, InboxAssignee, Priority, Reason, SenderFilter, Topic } from "@/lib/inbox-api";
+import type { ChannelFilter, HandledFilter, InboxAssignee, Priority, Reason, SenderFilter, Topic } from "@/lib/inbox-api";
 import { REASON_LABELS, TOPIC_LABELS, tabFilters, type QueueFilters, type QueueTabId } from "@/lib/inbox-queue";
 
 /** What `useAssignees` gives the panel: the team, why it is missing, and a retry. */
@@ -24,6 +24,11 @@ const SENDER: { value: SenderFilter; label: string }[] = [
   { value: "", label: "Anyone" },
   { value: "known", label: "Customers" },
   { value: "new", label: "New senders" },
+];
+const HANDLED: { value: HandledFilter; label: string }[] = [
+  { value: "", label: "Anyone" },
+  { value: "person", label: "Assistant paused" },
+  { value: "assistant", label: "Assistant answering" },
 ];
 /** Presets only: the API takes minutes. */
 const WAITING: { value: number | null; label: string }[] = [
@@ -132,6 +137,10 @@ export function FiltersBody({
     <Group legend="Sender">
       {SENDER.map((choice) => <Radio key={choice.value} name={`${id}-sender`} label={choice.label}
         checked={filters.sender === choice.value} onPick={() => set({ sender: choice.value })} />)}
+    </Group>
+    <Group legend="Handled by">
+      {HANDLED.map((choice) => <Radio key={choice.value} name={`${id}-handled`} label={choice.label}
+        checked={filters.handledBy === choice.value} onPick={() => set({ handledBy: choice.value })} />)}
     </Group>
     <div className="min-w-0 space-y-1">
       <Check label="Overdue only" checked={filters.overdue} disabled={own.overdue}

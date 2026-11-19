@@ -4072,3 +4072,174 @@ async def test_count_changes_are_announced_once_per_burst(shell: Shell) -> None:
         await expect(count).to_have_text("2", timeout=WAIT)
         await page.clock.run_for(1600)
         assert await page.evaluate("window.__said") == ["Needs us: 5", "Needs us: 2"]
+
+
+# ---- the Handled by filter ---------------------------------------------------------------------
+
+HANDLED_OPTIONS = ["Anyone", "Assistant paused", "Assistant answering"]
+
+
+def muted_queue_inbox(**changes: Any) -> Inbox:
+    """The queue rows with one of them taken over by a person (the assistant paused for it)."""
+    state = queue_inbox(**changes)
+    for item in state.items:
+        if item["id"] == NAMED:
+            item["human_muted"], item["owned_by"] = True, "human"
+    return state
+
+
+def handled_group(panel: Any) -> Any:
+    return panel.get_by_role("group", name="Handled by")
+
+
+async def test_handled_by_filters_the_list_and_leaves_the_counts_alone(shell: Shell) -> None:
+    state = muted_queue_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        panel = await open_filters(page)
+        group = handled_group(panel)
+        radios = group.get_by_role("radio")
+        await expect(radios).to_have_count(3)
+        for index, name in enumerate(HANDLED_OPTIONS):
+            await expect(radios.nth(index)).to_have_accessible_name(name)
+        await expect(radios.nth(0)).to_be_checked()
+        before = len(state.list_queries)
+        await group.get_by_role("radio", name="Assistant paused").check()
+        assert await settle(state, before) == {**TAB_QUERIES["needs_us"], "handled_by": ["person"]}
+        await rows_loaded(page, 1)
+        assert await shown_ids(page) == {NAMED}
+        # The counts are the server's whole-queue ones, whatever the filter.
+        await expect(tab(page, "needs_us")).to_have_accessible_name("Needs us, 3")
+        await expect(tab(page, "mine")).to_have_accessible_name("Mine, 2")
+        await page.keyboard.press("Escape")
+        await expect(panel).to_be_hidden()
+        button = page.get_by_test_id("inbox-queue-filters")
+        await expect(button).to_have_accessible_name("Filters, 1 applied")
+        chips = page.get_by_test_id("inbox-queue-chips")
+        paused = chips.get_by_role("button", name="Remove filter: Assistant paused")
+        await expect(paused).to_be_visible()
+        # The other side of the same filter.
+        panel = await open_filters(page)
+        before = len(state.list_queries)
+        await handled_group(panel).get_by_role("radio", name="Assistant answering").check()
+        assert await settle(state, before) == {
+            **TAB_QUERIES["needs_us"],
+            "handled_by": ["assistant"],
+        }
+        await rows_loaded(page, 2)
+        assert await shown_ids(page) == {UNNAMED, WAITING_ROW}
+        await page.keyboard.press("Escape")
+        await expect(
+            chips.get_by_role("button", name="Remove filter: Assistant answering")
+        ).to_be_visible()
+        await expect(paused).to_have_count(0)
+        await expect(tab(page, "needs_us")).to_have_accessible_name("Needs us, 3")
+        # The chip's own control takes it off.
+        before = len(state.list_queries)
+        await chips.get_by_role("button", name="Remove filter: Assistant answering").click()
+        assert await settle(state, before) == TAB_QUERIES["needs_us"]
+        await rows_loaded(page, 3)
+        await expect(chips.get_by_role("button")).to_have_count(0)
+        await expect(button).to_have_accessible_name("Filters")
+        panel = await open_filters(page)
+        await expect(handled_group(panel).get_by_role("radio", name="Anyone")).to_be_checked()
+
+
+async def test_handled_by_works_in_the_phone_sheet(shell: Shell) -> None:
+    state = muted_queue_inbox()
+    async with inbox_page(shell, state, width=390) as page:
+        await rows_loaded(page, 3)
+        await page.get_by_test_id("inbox-queue-filters").click()
+        sheet = page.get_by_role("dialog", name="Filters")
+        await expect(sheet).to_be_visible()
+        group = handled_group(sheet)
+        radios = group.get_by_role("radio")
+        await expect(radios).to_have_count(3)
+        for index, name in enumerate(HANDLED_OPTIONS):
+            await expect(radios.nth(index)).to_have_accessible_name(name)
+        before = len(state.list_queries)
+        await group.get_by_role("radio", name="Assistant paused").check()
+        assert await settle(state, before) == {**TAB_QUERIES["needs_us"], "handled_by": ["person"]}
+        await rows_loaded(page, 1)
+        await page.keyboard.press("Escape")
+        await expect(sheet).to_be_hidden()
+        await expect(
+            page.get_by_role("button", name="Remove filter: Assistant paused")
+        ).to_be_visible()
+        measured = await page_width(page)
+        assert measured["scroll"] <= measured["inner"], measured
+
+
+async def test_a_view_carries_handled_by_and_restores_it(shell: Shell) -> None:
+    state = muted_queue_inbox()
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        panel = await open_filters(page)
+        await handled_group(panel).get_by_role("radio", name="Assistant paused").check()
+        await rows_loaded(page, 1)
+        await page.keyboard.press("Escape")
+        menu = await open_views(page)
+        await menu.get_by_role("menuitem", name="Save this view…").click()
+        dialog = page.get_by_role("dialog", name="Save this view")
+        await dialog.get_by_label("Name", exact=True).fill("Taken over")
+        await dialog.get_by_role("button", name="Save view").click()
+        await expect(dialog).to_be_hidden(timeout=WAIT)
+        posts = view_calls(state, "POST")
+        assert len(posts) == 1, posts
+        assert posts[0]["body"]["filters"] == {
+            "state": ["needs_staff"],
+            "handled_by": "person",
+            "order": "due",
+        }, posts[0]["body"]
+        # Clear the filter, then bring it back through the view.
+        before = len(state.list_queries)
+        await page.get_by_role("button", name="Remove filter: Assistant paused").click()
+        assert await settle(state, before) == TAB_QUERIES["needs_us"]
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        item = menu.get_by_role("menuitemradio", name="Taken over")
+        await expect(item).not_to_have_attribute("aria-disabled", "true")
+        before = len(state.list_queries)
+        await item.click()
+        assert await settle(state, before) == {**TAB_QUERIES["needs_us"], "handled_by": ["person"]}
+        # handled_by is no tab's own filter: the view opens on its tab and shows the chip.
+        await expect(tab(page, "needs_us")).to_have_attribute("aria-selected", "true")
+        await expect(
+            page.get_by_role("button", name="Remove filter: Assistant paused")
+        ).to_be_visible()
+        await rows_loaded(page, 1)
+        assert await shown_ids(page) == {NAMED}
+        await expect(views_button(page)).to_have_text("Taken over")
+
+
+async def test_a_view_with_handled_by_is_listed_usable_and_an_unknown_value_is_not(
+    shell: Shell,
+) -> None:
+    state = muted_queue_inbox(
+        views={
+            ME_ID: [
+                saved_view("Paused chats", {"handled_by": "person", "order": "activity"}),
+                saved_view("Assistant chats now", {"handled_by": "assistant"}),
+                saved_view("Robot chats", {"handled_by": "robot"}),
+            ]
+        }
+    )
+    async with inbox_page(shell, state) as page:
+        await rows_loaded(page, 3)
+        menu = await open_views(page)
+        robot = menu.get_by_role("menuitemradio", name="Robot chats")
+        await expect(robot).to_have_attribute("aria-disabled", "true", timeout=WAIT)
+        await expect(robot).to_contain_text(UNSUPPORTED)
+        for name in ("Paused chats", "Assistant chats now"):
+            await expect(menu.get_by_role("menuitemradio", name=name)).not_to_have_attribute(
+                "aria-disabled", "true"
+            )
+        before = len(state.list_queries)
+        await menu.get_by_role("menuitemradio", name="Paused chats").click()
+        assert await settle(state, before) == {"handled_by": ["person"], "order": ["activity"]}
+        await expect(tab(page, "all")).to_have_attribute("aria-selected", "true")
+        await expect(
+            page.get_by_role("button", name="Remove filter: Assistant paused")
+        ).to_be_visible()
+        await rows_loaded(page, 1)
+        assert await shown_ids(page) == {NAMED}
