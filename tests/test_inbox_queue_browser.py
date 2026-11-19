@@ -920,7 +920,7 @@ async def test_taken_over_shows_on_waiting_and_snoozed_rows_the_assistant_is_pau
             found = await row_parts(page, identifier)
             assert found["reason"]["text"] == "Taken over", (identifier, found)
             assert found["state"]["text"].startswith(state_text), (identifier, found)
-            # The row's accessible name reads the state and then the reason, in words.
+            # The row's text reads the state and then the reason, in words.
             name = await row(page, identifier).inner_text()
             assert re.search(state_text + r".*Taken over", name, re.S), (identifier, name)
         # Rows the assistant answers, resolved rows and unpaused rows have no reason part.

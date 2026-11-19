@@ -86,7 +86,11 @@ export function NotificationBell({
           onLoad={() => void list.load()}
           onMarkRead={list.markRead}
           onMarkAll={() => void list.markAll()}
-          onNavigate={close}
+          onNavigate={(keyboard) => {
+            close();
+            // The focused link unmounts with the panel; keep keyboard focus on the bell.
+            if (keyboard) triggerRef.current?.focus();
+          }}
         />
       )}
     </div>

@@ -164,12 +164,15 @@ async def test_opening_lists_the_rows_newest_first_and_marks_nothing(shell: Shel
         await expect(newest.get_by_test_id("notification-detail")).to_have_text(
             "Ben Tan is back in Needs us."
         )
-        await expect(newest.locator("time")).to_have_text("5 minutes ago")
+        # Seeded before the browser started: a slow start may add a minute or two.
+        await expect(newest.locator("time")).to_have_text(re.compile(r"^[5-7] minutes ago$"))
         assert ABSOLUTE_TIME.match(await newest.locator("time").get_attribute("title") or "")
         await expect(rows(page).nth(2).get_by_test_id("notification-detail")).to_have_text(
             "Aisyah Rahman has waited 45 minutes."
         )
-        await expect(rows(page).nth(2).locator("time")).to_have_text("30 minutes ago")
+        await expect(rows(page).nth(2).locator("time")).to_have_text(
+            re.compile(r"^(30|31|32) minutes ago$")
+        )
         # "New" and the screen-reader "Unread." are on the three unread rows and not the read one.
         for index in range(3):
             await expect(rows(page).nth(index).get_by_text("New", exact=True)).to_have_count(1)
@@ -211,6 +214,21 @@ async def test_clicking_a_row_with_a_link_marks_it_and_opens_the_inbox(shell: Sh
         assert [call["body"] for call in state.notification_posts()] == [{"ids": [nid(2)]}]
         await expect(panel(page)).to_have_count(0)
         await expect(bell(page)).to_have_attribute("aria-label", "Notifications, 2 unread")
+
+
+async def test_a_keyboard_activated_link_opens_the_inbox_and_focus_returns_to_the_bell(
+    shell: Shell,
+) -> None:
+    state = seeded()
+    async with inbox_page(shell, state) as page:
+        await expect(badge(page)).to_have_text("3", timeout=WAIT)
+        await open_bell(page)
+        await rows(page).nth(2).get_by_role("link").focus()
+        await page.keyboard.press("Enter")
+        await expect(panel(page)).to_have_count(0)
+        await expect(bell(page)).to_be_focused()
+        assert page.url.split("?")[0].endswith("/portal/inbox")
+        assert [call["body"] for call in state.notification_posts()] == [{"ids": [nid(2)]}]
 
 
 async def test_a_row_without_a_usable_link_is_plain_text_with_a_mark_button(shell: Shell) -> None:

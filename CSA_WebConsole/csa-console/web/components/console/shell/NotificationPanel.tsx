@@ -81,7 +81,7 @@ export function NotificationPanel({
   onLoad: () => void;
   onMarkRead: (ids: string[]) => void;
   onMarkAll: () => void;
-  onNavigate: () => void;
+  onNavigate: (keyboard: boolean) => void;
 }) {
   const now = new Date(loadedAt);
   const panel = useRef<HTMLDivElement>(null);
@@ -159,9 +159,12 @@ export function NotificationPanel({
                 {link ? (
                   <Link
                     href={consoleHref(false, "inbox", { conversation: link.conversation })}
-                    onClick={() => {
+                    // A distinct ?conversation= per row would otherwise be prefetched in production.
+                    prefetch={false}
+                    onClick={(event) => {
                       if (open) onMarkRead([item.id]);
-                      onNavigate();
+                      // A keyboard activation has detail 0; a mouse click does not need focus moved.
+                      onNavigate(event.detail === 0);
                     }}
                     className={`block rounded-[var(--fs-radius-control)] px-3 py-2 hover:bg-[var(--fs-tile)] ${ROW_FOCUS}`}
                   >

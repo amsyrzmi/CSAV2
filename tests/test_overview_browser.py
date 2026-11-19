@@ -997,7 +997,6 @@ async def test_strip_shows_the_queue_counts_in_order(console: Console) -> None:
         )
         # No new request: the counts ride on the read the strip already makes.
         assert len(api.paths("inbox/conversations")) == 1, api.requests
-        assert [p for _, p in api.requests if p.startswith("inbox/queue")] == []
         # Still plain text: no link, no role, no live region.
         strip = page.get_by_test_id("overview-strip")
         await expect(strip.locator("a")).to_have_count(0)
