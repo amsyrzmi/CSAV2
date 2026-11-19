@@ -44,5 +44,6 @@ async def fulfill_shell_counts(route: Any) -> bool:
     answer = shell_counts_answer(urlsplit(route.request.url).path)
     if answer is None:
         return False
-    await route.fulfill(json=answer)
+    # Explicit status: some modules wrap the route in a shim whose `fulfill` requires it.
+    await route.fulfill(status=200, json=answer)
     return True

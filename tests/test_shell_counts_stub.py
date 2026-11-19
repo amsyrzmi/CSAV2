@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from tests.shell_counts_stub import SHELL_COUNT_PATHS, fulfill_shell_counts, shell_counts_answer
 
 NOTIFICATIONS = "/console/v1/notifications/count"
@@ -41,7 +39,7 @@ def test_every_other_path_is_not_answered() -> None:
     assert shell_counts_answer("") is None
 
 
-def test_a_query_string_or_origin_does_not_change_the_answer() -> None:
+def test_the_exact_path_only_a_query_string_or_origin_is_not_answered() -> None:
     assert shell_counts_answer(f"{NOTIFICATIONS}?x=1") is None
     assert shell_counts_answer(f"http://127.0.0.1:1{NOTIFICATIONS}") is None
 
@@ -55,14 +53,27 @@ class FakeRoute:
         self.fulfilled.append(kwargs)
 
 
-@pytest.mark.asyncio
 async def test_fulfill_shell_counts_answers_a_poll_and_leaves_other_calls() -> None:
     poll = FakeRoute(f"http://127.0.0.1:3000{NOTIFICATIONS}")
     assert await fulfill_shell_counts(poll) is True
-    assert poll.fulfilled == [{"json": {"unread": 0}}]
+    assert poll.fulfilled == [{"status": 200, "json": {"unread": 0}}]
     other = FakeRoute("http://127.0.0.1:3000/console/v1/inbox/conversations?limit=1")
     assert await fulfill_shell_counts(other) is False
     assert other.fulfilled == []
     # A query string does not hide a poll from the handler.
     queried = FakeRoute(f"http://127.0.0.1:3000{QUEUE}?x=1")
     assert await fulfill_shell_counts(queried) is True
+
+
+async def test_fulfill_shell_counts_works_with_a_shim_that_requires_status() -> None:
+    seen: list[tuple[int, object]] = []
+
+    class Strict:
+        request = type("Request", (), {"url": f"http://127.0.0.1:3000{QUEUE}"})()
+
+        @staticmethod
+        async def fulfill(*, status: int, json: object) -> None:
+            seen.append((status, json))
+
+    assert await fulfill_shell_counts(Strict) is True
+    assert seen and seen[0][0] == 200
