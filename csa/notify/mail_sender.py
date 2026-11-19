@@ -30,6 +30,11 @@ from csa.console.mailer import Mailer, OutgoingMail
 from csa.core import db
 from csa.core.tenancy import tx
 from csa.notify.email_render import render_person_email, render_target_email
+from csa.notify.failures import (
+    clear_person_failure_safely,
+    clear_target_failure_safely,
+    report_dead_person_email_safely,
+)
 from csa.notify.sender import (
     MAX_NOTIFICATION_ATTEMPTS,
     NOTIFICATION_STALE_SECONDS,
@@ -47,10 +52,14 @@ _REAP_EVERY_SECONDS = 60
 RECIPIENT_UNAVAILABLE = "recipient_unavailable"
 
 
-async def reap_stale_person_emails(owner_pool: AsyncConnectionPool) -> int:
+async def reap_stale_person_emails(
+    owner_pool: AsyncConnectionPool, app_pool: AsyncConnectionPool | None = None
+) -> int:
     """Return stale ``delivering`` person-email rows to ``pending`` (or ``dead`` at the cap).
 
     Returns how many moved. Idempotent, like :func:`csa.notify.sender.reap_stale_notifications`.
+    With ``app_pool`` the person of each row this call killed gets one bell notice per failure
+    episode (:mod:`csa.notify.failures`).
     """
     async with owner_pool.connection() as conn:
         async with conn.transaction():
@@ -62,7 +71,20 @@ async def reap_stale_person_emails(owner_pool: AsyncConnectionPool) -> int:
     for item in rows:
         if item["status"] == "dead":
             logger.error("person_email_dead", outbox_id=str(item["id"]), error_code="lease_expired")
+            if app_pool is not None:
+                await _report_reaped_person(app_pool, item["client_id"], item["user_id"])
     return len(rows)
+
+
+async def _report_reaped_person(
+    app_pool: AsyncConnectionPool, client_id: Any, user_id: Any
+) -> None:
+    """Report a person whose email the reaper just killed; an error is logged and swallowed."""
+    try:
+        async with tx(app_pool, str(client_id)) as conn:
+            await report_dead_person_email_safely(conn, client_id, user_id)
+    except Exception:
+        logger.exception("person_failure_report_failed", user_id=str(user_id))
 
 
 async def record_person_failure(
@@ -72,7 +94,7 @@ async def record_person_failure(
     dead = row["attempts"] >= MAX_NOTIFICATION_ATTEMPTS
     delay = min(300, 2 ** max(row["attempts"] - 1, 0))
     async with tx(app_pool, str(row["client_id"])) as conn:
-        await db.q.fetch_one(
+        marked = await db.q.fetch_one(
             "notify/email_outbox_mark_failed.sql",
             (
                 "dead" if dead else "pending",
@@ -83,6 +105,9 @@ async def record_person_failure(
             ),
             conn=conn,
         )
+        if dead and marked is not None:
+            # Only when this UPDATE killed the row: not a death another worker caused.
+            await report_dead_person_email_safely(conn, row["client_id"], row["user_id"])
     logger.error(
         "person_email_failed",
         outbox_id=str(row["id"]),
@@ -151,9 +176,9 @@ class NotificationMailer:
         if now < self._next_reap:
             return 0
         self._next_reap = now + _REAP_EVERY_SECONDS
-        return await reap_stale_notifications(self._owner_pool) + await reap_stale_person_emails(
-            self._owner_pool
-        )
+        return await reap_stale_notifications(
+            self._owner_pool, self._app_pool
+        ) + await reap_stale_person_emails(self._owner_pool, self._app_pool)
 
     async def _process_staff_email(self) -> bool:
         async with self._owner_pool.connection() as conn:
@@ -209,6 +234,7 @@ class NotificationMailer:
             )
             if updated is None:
                 raise RuntimeError("claimed notification is no longer delivering")
+            await clear_target_failure_safely(conn, client_id, row["target_id"])
 
     async def _process_person_email(self) -> bool:
         async with self._owner_pool.connection() as conn:
@@ -250,6 +276,7 @@ class NotificationMailer:
             )
             if updated is None:
                 raise RuntimeError("claimed email is no longer delivering")
+            await clear_person_failure_safely(conn, client_id, row["user_id"])
 
 
 async def notification_mail_loop(

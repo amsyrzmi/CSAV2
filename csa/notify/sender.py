@@ -16,6 +16,10 @@ from csa.channels.telegram import TelegramAdapter, TelegramDeliveryError
 from csa.contracts.callbacks import StaffCallbackCodec
 from csa.core import crypto, db
 from csa.core.tenancy import tx
+from csa.notify.failures import (
+    clear_target_failure_safely,
+    report_dead_target_safely,
+)
 from csa.notify.format import format_notification as format_notification  # re-exported
 
 logger = structlog.get_logger(__name__)
@@ -55,11 +59,15 @@ def quiet_until(quiet_hours: Any, priority: str, now: datetime) -> datetime | No
     return end_at.astimezone(UTC) if inside else None
 
 
-async def reap_stale_notifications(owner_pool: AsyncConnectionPool) -> int:
+async def reap_stale_notifications(
+    owner_pool: AsyncConnectionPool, app_pool: AsyncConnectionPool | None = None
+) -> int:
     """Return stale ``delivering`` rows to ``pending`` (or ``dead`` at the cap); how many moved.
 
     The query is channel-agnostic and idempotent, so the Telegram sender and the worker's mail
-    loop (:mod:`csa.notify.mail_sender`) both run it on their own cadence.
+    loop (:mod:`csa.notify.mail_sender`) both run it on their own cadence. With ``app_pool`` each
+    row this call killed is reported to the company's admins (once per target episode, see
+    :mod:`csa.notify.failures`); only rows the UPDATE returned as dead are reported.
     """
     async with owner_pool.connection() as conn:
         async with conn.transaction():
@@ -71,7 +79,20 @@ async def reap_stale_notifications(owner_pool: AsyncConnectionPool) -> int:
     for item in rows:
         if item["status"] == "dead":
             logger.error("staff_notification_dead", notification_id=str(item["id"]))
+            if app_pool is not None:
+                await _report_reaped_target(app_pool, item["client_id"], item["target_id"])
     return len(rows)
+
+
+async def _report_reaped_target(
+    app_pool: AsyncConnectionPool, client_id: Any, target_id: Any
+) -> None:
+    """Report a target whose row the reaper just killed; an error is logged and swallowed."""
+    try:
+        async with tx(app_pool, str(client_id)) as conn:
+            await report_dead_target_safely(conn, client_id, target_id)
+    except Exception:
+        logger.exception("target_failure_report_failed", target_id=str(target_id))
 
 
 async def record_failure(
@@ -85,7 +106,7 @@ async def record_failure(
         else min(300, 2 ** max(row["attempts"] - 1, 0))
     )
     async with tx(app_pool, str(row["client_id"])) as conn:
-        await db.q.fetch_one(
+        marked = await db.q.fetch_one(
             "notify/mark_failed.sql",
             (
                 "dead" if dead else "pending",
@@ -96,6 +117,9 @@ async def record_failure(
             ),
             conn=conn,
         )
+        if dead and marked is not None:
+            # Only when this UPDATE killed the row: not a death another worker caused.
+            await report_dead_target_safely(conn, row["client_id"], row["target_id"])
     logger.error(
         "staff_notification_failed",
         notification_id=str(row["id"]),
@@ -141,7 +165,7 @@ class StaffNotificationSender:
         return True
 
     async def reap(self) -> int:
-        return await reap_stale_notifications(self._owner_pool)
+        return await reap_stale_notifications(self._owner_pool, self._app_pool)
 
     async def _send(self, row: dict[str, Any]) -> None:
         client_id = row["client_id"]
@@ -250,6 +274,7 @@ class StaffNotificationSender:
             )
             if updated is None:
                 raise RuntimeError("claimed notification is no longer delivering")
+            await clear_target_failure_safely(conn, client_id, row["target_id"])
 
     async def _fail(self, row: dict[str, Any], code: str, retry_after: int | None) -> None:
         await record_failure(self._app_pool, row, code, retry_after)
