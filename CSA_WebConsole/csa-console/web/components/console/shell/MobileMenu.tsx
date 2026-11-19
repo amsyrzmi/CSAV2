@@ -4,8 +4,10 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { Menu } from "lucide-react";
 import SlideOver from "@/components/console/fs/SlideOver";
-import type { NavLink } from "@/lib/navigation";
+import type { NavBadges, NavLink } from "@/lib/navigation";
+import { badgeLinkName } from "@/lib/shell-counts";
 import { navIcon } from "./icons";
+import { NavCountBadge } from "./NavCountBadge";
 import { NavGroup, useGroupOpen } from "./NavGroup";
 
 const ITEM =
@@ -19,9 +21,11 @@ const ITEM =
 export function MobileMenu({
   links,
   path,
+  badges,
 }: {
   links: NavLink[];
   path: string;
+  badges?: NavBadges;
 }) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -75,16 +79,20 @@ export function MobileMenu({
                   onNavigate={() => setOpen(false)}
                 />
               );
+            const count = badges?.[key];
+            const countName = badgeLinkName(label, count);
             return (
               <Link
                 key={href}
                 href={href}
+                aria-label={countName === label ? undefined : countName}
                 aria-current={path === href ? "page" : undefined}
                 onClick={() => setOpen(false)}
                 className={ITEM}
               >
                 <Icon size={18} aria-hidden="true" />
-                {label}
+                <span className="min-w-0">{label}</span>
+                <NavCountBadge navKey={key} count={count} className="ml-auto" />
               </Link>
             );
           })}

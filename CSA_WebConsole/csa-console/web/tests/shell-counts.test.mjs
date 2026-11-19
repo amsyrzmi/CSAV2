@@ -7,7 +7,7 @@ const source = await readFile(new URL("../lib/shell-counts.ts", import.meta.url)
 const code = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 },
 }).outputText;
-const { wantsShellCounts, parseUnread, parseNeedsUs, nextCount } = await import(
+const { wantsShellCounts, parseUnread, parseNeedsUs, nextCount, navBadges, badgeLinkName } = await import(
   `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`
 );
 
@@ -75,4 +75,22 @@ test("nextCount keeps the previous answer when the read failed", () => {
   assert.equal(nextCount(5, 0), 0);
   assert.equal(nextCount(null, 3), 3);
   assert.equal(nextCount(2, 9), 9);
+});
+
+test("navBadges gives an inbox badge only for a whole number above 0", () => {
+  assert.deepEqual(navBadges({ unread: 3, needsUs: 12 }), { inbox: 12 });
+  assert.deepEqual(navBadges({ unread: null, needsUs: 1 }), { inbox: 1 });
+  assert.deepEqual(navBadges({ unread: null, needsUs: 150 }), { inbox: 150 });
+  for (const needsUs of [0, null, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, undefined, "4"]) {
+    assert.deepEqual(navBadges({ unread: 9, needsUs }), {}, String(needsUs));
+  }
+});
+
+test("badgeLinkName adds the count to the label only above 0", () => {
+  assert.equal(badgeLinkName("Customer inbox", 12), "Customer inbox, 12 need your team");
+  assert.equal(badgeLinkName("Customer inbox", 1), "Customer inbox, 1 need your team");
+  assert.equal(badgeLinkName("Customer inbox", 150), "Customer inbox, 150 need your team");
+  for (const count of [0, null, undefined, -2, 2.5, Number.NaN]) {
+    assert.equal(badgeLinkName("Customer inbox", count), "Customer inbox", String(count));
+  }
 });

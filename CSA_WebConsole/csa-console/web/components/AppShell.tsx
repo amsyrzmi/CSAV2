@@ -7,6 +7,7 @@ import type { Me } from "@/lib/identity-contracts";
 import { roleLabels } from "@/lib/identity-contracts";
 import type { HrNavItem } from "@/lib/hr-paths";
 import { navigationFor } from "@/lib/navigation";
+import { navBadges } from "@/lib/shell-counts";
 import { writeRail, type RailState } from "@/lib/shell-state";
 import type { PackageState } from "@/lib/services-api";
 import { AssistantDock } from "@/components/console/AssistantDock";
@@ -61,13 +62,13 @@ export function AppShell({
   const links = baseLinks.map((link) =>
     link.key === "hr" && hrItems?.length ? { ...link, children: hrItems } : link,
   );
-  // The one shell poll (notification and Needs us counts); Tasks 3 and 4 hand `counts` to the rail and the bell.
+  // The one shell poll (notification and Needs us counts); the rail and the menu show the Inbox badge.
   const counts = useShellCounts({
     role: me.role,
     hasInboxLink: baseLinks.some((link) => link.key === "inbox"),
     path,
   });
-  void counts;
+  const badges = navBadges(counts);
   const [rail, setRail] = useState<RailState>(initialRail ?? "collapsed");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -115,6 +116,7 @@ export function AppShell({
         home={home}
         state={rail}
         onToggle={toggleRail}
+        badges={badges}
       />
       {/* A page marked `data-fill` (Overview) gets the whole window below the top bar: the
           column becomes exactly the viewport tall (never shorter than 30rem) and <main> fills
@@ -126,6 +128,7 @@ export function AppShell({
           home={home}
           fallbackTitle={admin ? "Platform administration" : "Workspace"}
           account={account}
+          badges={badges}
         />
         {/* Outside <main> and every dialog, so a failed sign-out is never hidden behind one. */}
         {error && (

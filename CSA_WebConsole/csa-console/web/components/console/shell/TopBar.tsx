@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import type { NavLink } from "@/lib/navigation";
+import type { NavBadges, NavLink } from "@/lib/navigation";
 import { activeNav } from "@/lib/shell-state";
 import { MitoMark } from "@/components/brand/Mito";
 import { MobileMenu } from "./MobileMenu";
@@ -19,12 +19,14 @@ export function TopBar({
   home,
   fallbackTitle,
   account,
+  badges,
 }: {
   links: NavLink[];
   path: string;
   home: string;
   fallbackTitle: string;
   account: ShellAccount;
+  badges?: NavBadges;
 }) {
   const title = activeNav(links, path)?.label ?? fallbackTitle;
   return (
@@ -32,7 +34,7 @@ export function TopBar({
       data-testid="shell-topbar"
       className="flex items-center gap-3 border-b border-[color:var(--fs-border)] px-4 py-3 sm:px-8"
     >
-      <MobileMenu links={links} path={path} />
+      <MobileMenu links={links} path={path} badges={badges} />
       <Link href={home} aria-label="Mito home" className="flex items-center lg:hidden">
         <MitoMark size={32} />
       </Link>

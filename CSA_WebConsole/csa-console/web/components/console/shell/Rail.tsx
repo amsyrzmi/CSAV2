@@ -3,10 +3,12 @@
 import Link from "next/link";
 import { useState, type ReactNode } from "react";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
-import { groupParentCurrent, type NavLink } from "@/lib/navigation";
+import { groupParentCurrent, type NavBadges, type NavLink } from "@/lib/navigation";
+import { badgeLinkName } from "@/lib/shell-counts";
 import type { RailState } from "@/lib/shell-state";
 import { ByFourstacks, MitoMark, MitoWordmark } from "@/components/brand/Mito";
 import { navIcon } from "./icons";
+import { NavCountBadge } from "./NavCountBadge";
 import { NavGroup, useGroupOpen } from "./NavGroup";
 
 interface Tip {
@@ -35,12 +37,14 @@ export function Rail({
   home,
   state,
   onToggle,
+  badges,
 }: {
   links: NavLink[];
   path: string;
   home: string;
   state: RailState;
   onToggle: () => void;
+  badges?: NavBadges;
 }) {
   const expanded = state === "expanded";
   const groups = useGroupOpen(links, path);
@@ -125,10 +129,13 @@ export function Rail({
                   label={<span className="min-w-0 break-words">{label}</span>}
                 />
               );
+            const count = badges?.[key];
+            const countName = badgeLinkName(label, count);
             return (
               <Link
                 key={href}
                 href={href}
+                aria-label={countName === label ? undefined : countName}
                 // Collapsed, a group is one icon: marked "page" on its own page and "true"
                 // (styled alike) on a sub-page, so the current section shows without a list.
                 aria-current={link.children?.length ? groupParentCurrent(link, path, false) : path === href ? "page" : undefined}
@@ -137,6 +144,11 @@ export function Rail({
               >
                 <Icon size={18} aria-hidden="true" />
                 {text(label)}
+                <NavCountBadge
+                  navKey={key}
+                  count={count}
+                  className={expanded ? "ml-auto" : "absolute right-0.5 top-0.5"}
+                />
               </Link>
             );
           })}

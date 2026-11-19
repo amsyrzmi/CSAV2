@@ -6,6 +6,7 @@
  * never shown as zero.
  */
 import type { Me } from "./identity-contracts";
+import type { NavBadges } from "./navigation";
 
 export interface ShellCounts {
   /** Unread notifications for the signed-in person, or null while unknown. */
@@ -47,4 +48,22 @@ export function parseNeedsUs(body: unknown): number | null {
 /** A failed or malformed read (parsed null) keeps the previous answer. */
 export function nextCount(previous: number | null, parsed: number | null): number | null {
   return parsed === null ? previous : parsed;
+}
+
+function positiveCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+/** The count badges of the navigation: only Inbox, from Needs us, and only above 0. */
+export function navBadges(counts: ShellCounts): NavBadges {
+  return positiveCount(counts.needsUs) ? { inbox: counts.needsUs } : {};
+}
+
+/**
+ * The accessible name of a navigation link that carries a count badge. The badge itself is
+ * hidden from assistive technology; the true number is in the name only when it is above 0, so
+ * a link with no count keeps exactly its label.
+ */
+export function badgeLinkName(label: string, count: number | null | undefined): string {
+  return positiveCount(count) ? `${label}, ${count} need your team` : label;
 }
