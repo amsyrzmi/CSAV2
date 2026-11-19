@@ -198,14 +198,14 @@ Failure modes the spec implies that no task would test unless named. Each is pin
 ### Task 9: Web client, view logic and nav
 
 **Files:**
-- Create: `CSA_WebConsole/csa-console/web/lib/notifications-settings-api.ts`, `lib/notifications-settings-view.ts`, `lib/notifications-settings-view.test.mjs` (follow where `lib/notifications-view.test.mjs` lives)
+- Create: `CSA_WebConsole/csa-console/web/lib/notifications-settings-api.ts`, `lib/notifications-settings-view.ts`, `tests/notifications-settings-view.test.mjs` (beside `tests/notifications-view.test.mjs`)
 - Modify: `lib/navigation.ts` (`NavKey` gains `"notifications"`; entry `{ key: "notifications", label: "Notifications", href: to("notifications") }`, shown to every role including platform admin (the page hides the personal section for them), placed beside Team and Password), the navigation tests that enumerate labels (`tests/test_nav_groups_browser.py`, `tests/test_workspace_contracts.py` contract regex; update, do not weaken)
 
 **Interfaces:**
 - Produces: types `NotificationTarget`, `TargetsResponse`, `Preferences`; functions `getTargets`, `saveTarget`, `addEmailTarget`, `testTarget`, `deleteTarget`, `getPreferences`, `savePreferences` (all through `lib/api.ts` conventions, `client_id` passthrough for platform admin); pure view functions `eventLabel(event: string): string` (plain-language labels, e.g. `inbox.overdue` → "Overdue customer replies"), `kindLabel(kind)`, `priorityLabel`, `failureLine(t: NotificationTarget): string | null` ("Last delivery failed, 5 attempts, 18 Nov 14:02"), `quietHoursText(q)`, `validateQuietHours(start,end,tz)`, `validateEmailAddress(s)`, `timingFields` (the nine Inbox settings with label, unit, min, max, "0 turns it off" flag) and `validateTiming(values)` returning field errors.
 
 - [ ] **Step 1: Write failing node tests:** labels for every event and kind (unknown event returns the raw key, never throws); `failureLine` null when no failure; quiet hours same start and end invalid; email address validator rejects `a@b`, spaces and over-254 characters; `validateTiming` enforces the ranges of spec 5.3 exactly (urgent..low 5 to 10080, repeat 15 to 1440, max_repeats 0 to 10, follow_up 0 to 720, stale_claim 0 to 168, handback 0 to 720).
-- [ ] **Step 2: Run; expect FAIL:** `bash <wrapper> node --test lib/notifications-settings-view.test.mjs` from the web dir.
+- [ ] **Step 2: Run; expect FAIL:** `bash <wrapper> node --test tests/notifications-settings-view.test.mjs` from the web dir.
 - [ ] **Step 3: Implement** the files; navigation entry gets a bell-free icon-less row like its siblings.
 - [ ] **Step 4: Run node tests, `tsc --noEmit` and eslint via the wrapper; expect PASS.**
 - [ ] **Step 5: Commit** `feat(inbox): notification settings client and view logic`.
