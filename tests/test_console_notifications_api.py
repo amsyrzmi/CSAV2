@@ -318,13 +318,13 @@ async def test_the_purge_deletes_thirty_one_day_rows_and_keeps_twenty_nine_per_c
     unread_old_a = await put(w, a_id, age=timedelta(days=45))  # unread rows expire too
     old_b = await put(w, b_id, tenant=1, age=timedelta(days=31))
     new_b = await put(w, b_id, tenant=1, age=timedelta(days=29), read=True)
-    assert await _purge(w, 0) == {"purged": 2}
+    assert await _purge(w, 0) == {"purged": 2, "email_purged": 0}
     assert await _remaining(w, 0) == {new_a}
     # Company A's run never touched company B's rows.
     assert await _remaining(w, 1) == {old_b, new_b}
-    assert await _purge(w, 1) == {"purged": 1}
+    assert await _purge(w, 1) == {"purged": 1, "email_purged": 0}
     assert await _remaining(w, 1) == {new_b}
-    assert await _purge(w, 0) == {"purged": 0}
+    assert await _purge(w, 0) == {"purged": 0, "email_purged": 0}
     assert old_a not in await _remaining(w, 0) and unread_old_a not in await _remaining(w, 0)
 
 
@@ -334,5 +334,56 @@ async def test_the_purge_works_in_batches(sessions: SessionWorld) -> None:
     for n in range(5):
         await put(w, a_id, age=timedelta(days=40, minutes=n))
     keep = await put(w, a_id, age=timedelta(days=1))
-    assert await _purge(w, 0, batch_size=2) == {"purged": 5}
+    assert await _purge(w, 0, batch_size=2) == {"purged": 5, "email_purged": 0}
     assert await _remaining(w, 0) == {keep}
+
+
+async def _put_outbox(w: SessionWorld, user_id: str, *, tenant: int = 0, age: timedelta) -> str:
+    """An outbox row for ``user_id`` (any status), written as the owner; returns its id."""
+    row_id = str(uuid4())
+    await w.q(
+        "INSERT INTO console_email_outbox (id, client_id, user_id, notification_id, kind,"
+        " priority, message_key, created_at)"
+        " VALUES (%s, %s, %s, %s, 'inbox.overdue', 'high', 'inbox.overdue', %s)",
+        row_id,
+        w.tenants[tenant],
+        user_id,
+        str(uuid4()),
+        NOW - age,
+    )
+    return row_id
+
+
+async def _outbox_remaining(w: SessionWorld, tenant: int) -> set[str]:
+    rows = await w.q("SELECT id FROM console_email_outbox WHERE client_id = %s", w.tenants[tenant])
+    return {str(row["id"]) for row in rows}
+
+
+async def test_the_purge_also_deletes_old_email_outbox_rows_per_company(
+    sessions: SessionWorld,
+) -> None:
+    w = sessions
+    _, a_id = await person(w)
+    _, b_id = await person(w, tenant=1)
+    old_a = await _put_outbox(w, a_id, age=timedelta(days=31))
+    new_a = await _put_outbox(w, a_id, age=timedelta(days=29))
+    old_b = await _put_outbox(w, b_id, tenant=1, age=timedelta(days=45))
+    keep_note = await put(w, a_id, age=timedelta(days=2))
+    assert await _purge(w, 0) == {"purged": 0, "email_purged": 1}
+    assert await _outbox_remaining(w, 0) == {new_a} and old_a not in await _outbox_remaining(w, 0)
+    assert await _remaining(w, 0) == {keep_note}
+    # Company A's run never touched company B's outbox.
+    assert await _outbox_remaining(w, 1) == {old_b}
+    assert await _purge(w, 1) == {"purged": 0, "email_purged": 1}
+    assert await _outbox_remaining(w, 1) == set()
+    assert await _purge(w, 0) == {"purged": 0, "email_purged": 0}
+
+
+async def test_the_outbox_purge_works_in_batches(sessions: SessionWorld) -> None:
+    w = sessions
+    _, a_id = await person(w)
+    for n in range(5):
+        await _put_outbox(w, a_id, age=timedelta(days=40, minutes=n))
+    keep = await _put_outbox(w, a_id, age=timedelta(days=1))
+    assert await _purge(w, 0, batch_size=2) == {"purged": 0, "email_purged": 5}
+    assert await _outbox_remaining(w, 0) == {keep}
