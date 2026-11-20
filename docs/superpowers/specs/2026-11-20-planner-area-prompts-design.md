@@ -1,6 +1,7 @@
 # Planner area prompts: each turn sees only the areas it needs
 
-Status: design for the owner's approval. Nothing is built.
+Status: phase A built and measured behind a switch that is off by default; phase B (the decider's area
+questions) is not built. See "Results of the build" at the end.
 
 ## Why
 
@@ -172,3 +173,156 @@ fails when an action, fact bullet or rule has no area (a new HR action cannot be
 - A scoped prompt is a different prompt from the full one: the area prose must be complete enough that
   an action never depends on a bullet that lives in another area (the area-map test checks each
   action's own bullet and the rules that name it are in its area).
+
+## Results of the build (2026-11-20)
+
+### What was built (phase A)
+
+- Every prompt bullet, rule and action has an area (`csa/workspace/prompt_areas.py`); `scoped_prompt(areas)`
+  in `csa/workspace/planner.py` builds the general part plus the selected areas' prose and a schema
+  filtered to the reachable definitions. `SYSTEM_PROMPT` is unchanged and remains the full prompt, the
+  fail-open case and the baseline.
+- `select_areas` in `csa/workspace/area_select.py`: the seven signals of the design (tab, record kind,
+  word rules in English and Malay, previous action and previous message, colleague pick, `Needs`), the
+  union of all, `None` when none fires.
+- The switch `WORKSPACE_AREA_PROMPTS` (`csa/core/settings.py`), **off by default**; no
+  `deploy/*-rollout.env` was changed.
+- The safety net: an action outside the selected areas, or an invalid output with no named reason on a
+  scoped prompt, re-plans once with the full prompt (final). A `resolve` refusal also widens (outside
+  the gate; a ruling).
+- The smoke harness: `--areas`, `--no-widen`, page tab and open-record facts, per-case expected areas,
+  26 new cases (cross-area, follow-up, tab, record, unmatched), a Business preset for the product cases.
+  The file now holds 125 cases (99 old + 26 new).
+- Offline (no model): 0 selector misses over all 125 cases; `tests/test_area_select.py` and
+  `tests/test_assistant_smoke.py`: 186 passed.
+
+Phase B (the routing decider's area questions) is not built and is not measured by this gate.
+
+### Runs
+
+Whole smoke file, 125 cases at 5 samples = 625 per full run, all on 2026-11-20, real model
+gpt-oss-120b, throwaway container over the staging image. The raw outputs (ids and counts only) are in
+`docs/superpowers/specs/2026-11-20-planner-area-prompts-assets/`.
+
+| Run | Flags, commit | Time | Passing | Gate |
+|---|---|---|---|---|
+| 1 baseline | default (full prompt), `463e4527` | 13:16-13:25 | 602 / 625 | reference |
+| 2 candidate1 | `--areas --no-widen`, `463e4527` | 13:26-13:38 | 605 / 625 | 3 violations |
+| 3 candidate2 | `--areas --no-widen`, `36810e8e` | 13:50-14:02 | 613 / 625 | 1 violation |
+| 4 candidate3_widen | `--areas` (widening on), `df4a01f8` | 14:04-14:14 | 613 / 625 | 2 violations, noise (below) |
+| 5 candidate3 | `--areas --no-widen`, `df4a01f8` | 14:14-14:25 | **615 / 625** | **passes** |
+
+Baseline cases below 5/5: `email_batch-en-1` 4, `email_batch_rest-en-1` 4, `email_batch_rest-ms-1` 1,
+`hr_process-ms-1` 0, `hr_process-ms-3` 4, `hr_process-en-4` 3, `hr_process-en-5` 2,
+`hr_process_neg-ms-5` 0, `follow_up-ms-1` 4.
+
+### Run 2 and its three violations
+
+`hr_process-ms-3` 4 to 2, `hr_process_neg-en-5` 5 to 0, `product_stock-en-1` 5 to 3. Rerun of the three
+alone at `--repeat 10` (`rerun_base.txt` against `rerun_cand.txt`, 30 samples each): `hr_process-ms-3`
+10/10 against 5/10, `hr_process_neg-en-5` 10/10 against 0/10, `product_stock-en-1` 10/10 against 8/10
+(30/30 against 13/30). All three are real, not noise.
+
+### Diagnosis and tuning
+
+Forced-area experiments on the real model (a scratch copy of the code that forced the selected areas;
+never committed; 5 to 10 samples each) found the cause of each:
+
+- `hr_process_neg-en-5`, "Please approve Aina's laptop task": `{hr}` 5/5, `{hr, inbox}` 0/5,
+  `{hr, inbox, email}` 0/5, `{hr, inbox, training, bookings}` 1/5, all six areas through the scoped path
+  5/5. The bare word `approve` pulled inbox in and the model returned `hr_task_complete`.
+- `hr_process-ms-3`, "Siapa dalam onboarding sekarang?": `{hr}` 9/10 (and 5/5), `{email, hr}` 6/10 (and
+  3/5), `{hr, training}` 2/5. Selecting email made the model answer from the facts instead of calling
+  `hr_process_read`.
+- `product_stock-en-1`: `{products}` alone 7-8/10 over four runs (the failure: an answer "let me
+  check" with reads `[read_current_record]` instead of `product_stock_read`); products plus any one of
+  bookings, email, training, hr or inbox 10/10 each (50 samples).
+
+Two tuning commits followed:
+
+- `36810e8e`: the weak approve/reject words are suppressed when an HR task word is present; "who is /
+  siapa" is a weak signal that adds email and hr only when no other area word matched.
+- `df4a01f8`: a selection of exactly `{products}` also gets `inbox` (the smallest companion).
+
+Run 3 (after `36810e8e`) left one violation, `product_stock-en-1` 5 to 2; run 5 (after `df4a01f8`)
+left none.
+
+### Final compare (run 5 against run 1)
+
+`python -m scripts.smoke_compare baseline.txt candidate3.txt` prints no `VIOLATION`: the gate passes.
+
+```
+DOWN draft-ms-1 5/5 to 4/5
+UP email_batch-en-1 4/5 to 5/5
+DOWN email_batch_rest-en-1 4/5 to 3/5
+UP email_batch_rest-ms-1 1/5 to 5/5
+UP follow_up-ms-1 4/5 to 5/5
+UP hr_process-en-4 3/5 to 5/5
+UP hr_process-en-5 2/5 to 5/5
+UP hr_process-ms-1 0/5 to 5/5
+UP hr_process-ms-3 4/5 to 5/5
+DOWN hr_process-ms-5 5/5 to 4/5
+DOWN training_ask-ms-1 5/5 to 4/5
+total 602/625 to 615/625
+```
+
+Four cases are down by one (allowed): `draft-ms-1`, `email_batch_rest-en-1`, `hr_process-ms-5`,
+`training_ask-ms-1`. Seven are up. `hr_process_neg-ms-5` stays at 0/5 in both runs (a known open case
+from the HR work, not caused by this project).
+
+### Widening (run 4)
+
+Run 4 ran with widening on: **0 of 625 samples widened (0%; the ceiling is 10%)**. No pass depends on
+widening. Its compare against the baseline prints two violations, `email_batch-ms-1` 5 to 3 and
+`hr_process-en-1` 5 to 3, although nothing was widened, so its prompts equal run 5's, where both cases
+score 5/5. That is run-to-run noise of the same configuration (about 2 samples either way at repeat
+5), not a regression. The gate decision rests on run 5.
+
+### Prompt sizes (characters; full prompt 36,402)
+
+Scoped prompts: email 20,599; hr 16,088; training 15,922; bookings 15,337; inbox 13,424; products 7,871
+(products always travels with inbox, so 15,058). Two-area sets run from 17,225 (bookings, inbox,
+products) to 29,963 (email, hr).
+
+Over the 125 smoke cases under the final selector (a case with no signal keeps the full 36,402):
+
+| | Characters |
+|---|---|
+| Mean | 20,236 (44.4% below the full prompt) |
+| Median | 16,088 (55.8% below) |
+| Mean over the 117 scoped cases | 19,130 |
+| Range of scoped prompts | 13,424 to 29,963 |
+
+117 of 125 cases (93.6%) get a scoped prompt (floor 90%). Eight keep the full prompt on purpose:
+`navigate-en-3`, `navigate-ms-4`, `navigate-en-4`, `navigate-ms-5`, `answer-en-1`, `answer-ms-1`,
+`no_area-en-1`, `no_area-ms-1`. Precision (report only): 0.44 extra areas per scoped case. The smoke
+cases are not production traffic, so the real mean depends on the mix of messages.
+
+### Budget
+
+5 of 5 approved full runs used, plus one 3-case rerun pair at 10 samples and about ten forced-area
+experiments of 5 to 10 samples. No sixth full run.
+
+### Caveats
+
+- The model is not deterministic: the same configuration moves by about 2 samples at repeat 5 (runs 4
+  and 5 have identical prompts and differ by 2 samples in total and by different cases). Read one case
+  at one run with that in mind.
+- The products companion is a measured perturbation fix, not a root-cause fix: the record summary
+  already holds the stock count and the model sometimes answers from it instead of calling
+  `product_stock_read`. Another companion area works as well as inbox did.
+- `{email, hr}` plans carry the booking step shape without its prose (ledger ruling: revisit if stray
+  booking steps appear on staging).
+- Widening also happens on a `resolve` refusal; that is outside the gate and is a ruling.
+- Nothing logs a widen yet. The switch-on PR should add it, so the live widened share can be read
+  against the 10% ceiling.
+- Phase B (the decider's area questions) is not built; the planner gate does not measure it.
+
+### Owner decisions still open
+
+- Whether a switch-on PR for staging (`WORKSPACE_AREA_PROMPTS`, with a widen log) follows now. The
+  switch is off by default and no rollout file changed. The design's one final staging smoke run after
+  the switch is on needs its own yes (a sixth full run is outside the approved budget).
+- Phase B: build the decider's area answers (task 8 of the plan), and later turn routing to `cascade`
+  only after the owner runs `scripts/assistant_jev_eval.py`.
+- Whether to accept the `{email, hr}` booking-step-shape ruling and the `resolve` widening ruling.
