@@ -237,3 +237,7 @@ The evidence favours approach 2 of this document (area-scoped prompts chosen ser
 wording work on one prompt: with an HR turn seeing only HR and general actions, a change to email or
 training wording cannot flip an HR case. That needs its own design (how the area is chosen, what
 happens on a wrong choice) and is not part of this project.
+
+### Decision (2026-11-20)
+
+The owner chose to merge the tooling and leave `SYSTEM_PROMPT` as it is. The measured candidate is kept on the branch `exp/planner-compact-candidate` (commit `41383ef2`: the one-line wiring in `planner.py`, the `personalised`-first reorder, and the prompt tests re-pointed at the prose part of the prompt, because the catalogue's `- action:` lines use the same marker as the prose bullets). Nothing in production changed; `compact_catalogue` is not called by the planner.

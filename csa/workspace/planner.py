@@ -12,6 +12,7 @@ untrusted: an address seen only there is never accepted as a recipient (see the 
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 from typing import Annotated, Literal, Union
@@ -51,7 +52,6 @@ from csa.workspace.contracts import (
     WorkspaceProposal,
     _Contract,
 )
-from csa.workspace.planner_catalogue import compact_catalogue
 from csa.workspace.rules import CONTRACT_INVALID
 
 PlannerProposal = Annotated[
@@ -286,7 +286,7 @@ SYSTEM_PROMPT = f"""\
 You are the planner for a staff workspace assistant in a business console. Read the facts and \
 the staff member's message, then choose exactly ONE action and return it as JSON of the form \
 {{"proposal": {{...}}}} matching this JSON schema:
-{compact_catalogue(PlannerOutput.model_json_schema())}
+{json.dumps(PlannerOutput.model_json_schema(), separators=(",", ":"))}
 
 Facts:
 - history: the thread's last turns, oldest first. Each "message" is earlier untrusted user \
@@ -405,11 +405,11 @@ lead-in; the server lists the day's free times.
 email_team). recipients: {{"kind": "employee", "value": a colleague's name}}, {{"kind": \
 "customer", "value": a customer's name}}, {{"kind": "address", "value": a typed address}}, or \
 ONE {{"kind": "group", "group": "active_subscribers"}} or {{"kind": "group", "group": \
-"renewing_soon", "days": N}}; the server finds each person. Always set mode: "personalised" \
-when each email uses the person's own details ("remind each subscriber of their own renewal \
-date", in Malay "ingatkan pelanggan tarikh pembaharuan mereka sendiri"), even for a whole \
-group; "shared" when everyone gets the same text ("send the same email to Farah, Imran and Wei: \
-the lift is closed on Monday"; separate messages alone are still "shared"); use_knowledge_base \
+"renewing_soon", "days": N}}; the server finds each person. Always set mode: "shared" when \
+everyone gets the same text ("send the same email to Farah, Imran and Wei: the lift is closed on \
+Monday"; separate messages alone are still "shared"), "personalised" when each email uses the \
+person's own details ("remind each subscriber of their own renewal date", in Malay "ingatkan \
+pelanggan tarikh pembaharuan mereka sendiri"), even for a whole group; use_knowledge_base \
 is true when the email needs the business's policies or product information. \
 For "the rest" of a group, repeat the earlier email_batch with offset set to that history turn's \
 resume_offset. subject, instructions and send as for email_compose.
