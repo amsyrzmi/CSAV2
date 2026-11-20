@@ -391,12 +391,12 @@ class _RecordingPlanner(WorkspacePlanner):
         self.calls: list[_Call] = []
 
     async def plan(
-        self, message: str, facts: PlannerFacts, *, note: str | None = None
+        self, message: str, facts: PlannerFacts, *, note: str | None = None, widen: bool = False
     ) -> WorkspaceProposal:
         call = _Call()
         self.calls.append(call)
         try:
-            call.proposal = await super().plan(message, facts, note=note)
+            call.proposal = await super().plan(message, facts, note=note, widen=widen)
         except PlannerInvalidOutput as exc:
             call.refusal = exc.reason or CONTRACT_INVALID
             raise

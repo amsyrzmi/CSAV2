@@ -202,6 +202,9 @@ class PlannerFacts(_Contract):
     bookings: BookingFacts | None = None
     # Fixed server text about the page (PAGE_HINTS).
     page_hint: str | None = None
+    # The areas the scoped prompt covers, for the server's own use (the prompt choice, which facts
+    # travel, the widening check): never shown to the model. None is the full prompt.
+    areas: frozenset[Area] | None = Field(default=None, exclude=True)
 
 
 class PlannerOutput(_Contract):
@@ -296,8 +299,38 @@ def scoped_prompt(areas: frozenset[Area]) -> str:
 _MESSAGE_TAG = re.compile(r"<(?=/?(?:message|correction))", re.IGNORECASE)
 
 
-def planner_prompt(message: str, facts: PlannerFacts, note: str | None = None) -> str:
-    """The user prompt; ``note`` is fixed server text (never user or mail text) for a re-plan."""
+# The facts whose payload belongs to areas: it travels only when one of them is selected.
+# Everything else (history, the record summary, the page hint, role and packages) is general.
+_FACT_AREAS: dict[str, frozenset[Area]] = {
+    "my_manager": frozenset({"email", "hr"}),
+    "mailbox_threads": frozenset({"email"}),
+    "my_team": frozenset({"email"}),
+    "my_employee": frozenset({"training"}),
+    "people_access": frozenset({"hr"}),
+    "bookings": frozenset({"bookings"}),
+}
+
+
+def _scoped_facts(facts: PlannerFacts) -> PlannerFacts:
+    """``facts`` without the payloads of areas the scoped prompt does not cover."""
+    if facts.areas is None:
+        return facts
+    chosen = facts.areas
+    return facts.model_copy(
+        update={name: None for name, owners in _FACT_AREAS.items() if not owners & chosen}
+    )
+
+
+def planner_prompt(
+    message: str, facts: PlannerFacts, note: str | None = None, *, widen: bool = False
+) -> str:
+    """The user prompt; ``note`` is fixed server text (never user or mail text) for a re-plan.
+
+    A scoped turn (``facts.areas`` set) drops the facts of other areas; a ``widen`` call, which
+    uses the full prompt, keeps every fact that was loaded.
+    """
+    if not widen:
+        facts = _scoped_facts(facts)
     # JSON-escape < and > so untrusted text (mail subjects, history) cannot close the tags.
     data = facts.model_dump_json().replace("<", "\\u003c").replace(">", "\\u003e")
     # The same escape for a <message> or <correction> tag in the message, so it cannot end the
@@ -326,13 +359,20 @@ class WorkspacePlanner:
         self._timeout = timeout
 
     async def plan(
-        self, message: str, facts: PlannerFacts, *, note: str | None = None
+        self,
+        message: str,
+        facts: PlannerFacts,
+        *,
+        note: str | None = None,
+        widen: bool = False,
     ) -> WorkspaceProposal:
+        """One model call. ``facts.areas`` scopes the prompt; ``widen`` forces the full one."""
+        system = SYSTEM_PROMPT if widen or facts.areas is None else scoped_prompt(facts.areas)
         try:
             output = await self._client.json_completion(
                 PlannerOutput,
-                system=SYSTEM_PROMPT,
-                user=planner_prompt(message, facts, note),
+                system=system,
+                user=planner_prompt(message, facts, note, widen=widen),
                 timeout=self._timeout,
             )
         except CompletionError as exc:

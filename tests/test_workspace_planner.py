@@ -3696,3 +3696,36 @@ def test_planner_prompt_lets_a_picked_process_option_come_back_as_person() -> No
         "the user picked one from offered options."
     ) in flat
     assert len(_process_bullet()) < 900
+
+
+@requires_docker
+async def test_switch_off_makes_no_selection(planned, monkeypatch) -> None:
+    """Default off: the turn path never selects areas, so every call gets the full prompt."""
+    import csa.workspace.service as service
+
+    def refuse(*_: Any, **__: Any) -> None:
+        raise AssertionError("select_areas must not run with the switch off")
+
+    monkeypatch.setattr(service, "select_areas", refuse)
+    w, model = planned
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+    model.reply({"action": "answer", "markdown": "ok"})
+    turn = await _turn(w, browser, thread, "hello", "hr")
+    assert turn.status_code == 201, turn.text
+    assert [system for _, system, _ in model.calls] == [SYSTEM_PROMPT]
+
+
+@requires_docker
+async def test_switch_on_scopes_the_prompt_to_the_selected_areas(planned) -> None:
+    from csa.workspace.planner import scoped_prompt
+
+    w, model = planned
+    w.app.state.workspace_area_prompts = True
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+    model.reply({"action": "answer", "markdown": "ok"})
+    turn = await _turn(w, browser, thread, "hello", "hr")
+    assert turn.status_code == 201, turn.text
+    assert [system for _, system, _ in model.calls] == [scoped_prompt(frozenset({"hr"}))]
+    assert '"areas"' not in model.calls[0][2]

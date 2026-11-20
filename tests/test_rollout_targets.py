@@ -135,6 +135,7 @@ def test_production_target_values() -> None:
     assert PRODUCTION.optional_keys == PROD_TUNING_KEYS | {
         "CSA_STAGING_TRAINING_VIDEO",
         "CSA_STAGING_HR_DEFAULT_TEMPLATES",
+        "CSA_STAGING_WORKSPACE_AREA_PROMPTS",
         "CSA_PROD_S3_TRAINING_KEY",
     }
     assert PRODUCTION.host_file == Path("/srv/csa-prod/host.env")
@@ -488,6 +489,7 @@ def test_the_training_switches_are_optional_and_their_values_are_checked(tmp_pat
     assert STAGING.optional_keys == {
         "CSA_STAGING_TRAINING_VIDEO",
         "CSA_STAGING_HR_DEFAULT_TEMPLATES",
+        "CSA_STAGING_WORKSPACE_AREA_PROMPTS",
     }
     # The key switch is production's alone: staging has no S3.
     assert "CSA_PROD_S3_TRAINING_KEY" not in STAGING.optional_keys
@@ -577,3 +579,28 @@ def test_the_hr_default_templates_switch_loads_and_its_value_is_checked(tmp_path
     with pytest.raises(sr.RolloutError) as caught:
         sr.load_flags(path, PRODUCTION)
     assert caught.value.message.endswith(f"{HR_DEFAULTS} must be one of false, true")
+
+
+# --- the planner's scoped-prompt switch -------------------------------------------------------
+
+AREA_PROMPTS = "CSA_STAGING_WORKSPACE_AREA_PROMPTS"
+
+
+def test_the_area_prompts_switch_ships_off_on_both_targets() -> None:
+    """Absent is off: a separate reviewed pull request adds the line once the gate has passed."""
+    for target in (STAGING, PRODUCTION):
+        path = sr.REPO_ROOT / target.flags_file
+        assert AREA_PROMPTS not in path.read_text(encoding="utf-8"), target.name
+        assert AREA_PROMPTS not in sr.load_flags(path, target), target.name
+        assert AREA_PROMPTS in target.optional_keys, target.name
+        assert target.optional_values[AREA_PROMPTS] == ("false", "true"), target.name
+        assert AREA_PROMPTS not in target.host_override_keys | target.host_required_keys
+
+
+def test_the_area_prompts_switch_loads_and_its_value_is_checked(tmp_path: Path) -> None:
+    path = production_flags_with(tmp_path, f"{AREA_PROMPTS}=true")
+    assert sr.load_flags(path, PRODUCTION)[AREA_PROMPTS] == "true"
+    path = production_flags_with(tmp_path, f"{AREA_PROMPTS}=yes")
+    with pytest.raises(sr.RolloutError) as caught:
+        sr.load_flags(path, PRODUCTION)
+    assert caught.value.message.endswith(f"{AREA_PROMPTS} must be one of false, true")

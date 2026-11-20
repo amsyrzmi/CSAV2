@@ -57,6 +57,7 @@ from csa.metering.context import MeterContext, meter_context
 from csa.training import ask as training_ask
 from csa.training.access import can_manage
 from csa.workspace import email_batch, hr_people, hr_processes, hr_task_card, stock
+from csa.workspace.area_select import select_areas
 from csa.workspace.contracts import (
     MAX_STEPS,
     MAX_WORK_TTL,
@@ -123,6 +124,7 @@ from csa.workspace.planner import (
     detect_language,
     page_hint,
 )
+from csa.workspace.prompt_areas import allowed_actions
 from csa.workspace.registry import PreparedProposal, ProposalRegistry
 from csa.workspace.routing import Needs, route_facts
 from csa.workspace.rules import ADDRESS as _ADDRESS
@@ -1310,6 +1312,17 @@ async def planner_facts(
     # Whatever the words and the tab: a company with Bookings open always gives the model its
     # clock (one time-zone read), so no phrasing is wrongly told that bookings are unavailable.
     booked = await booking_facts(request, actor, client_id, packages)
+    # The scoped prompt is behind WORKSPACE_AREA_PROMPTS (app.state, off by default): off, no
+    # selection runs and the turn keeps the full prompt.
+    areas = None
+    if getattr(request.app.state, "workspace_area_prompts", False) is True:
+        areas = select_areas(
+            turn.body,
+            tab=context.tab if context is not None else None,
+            record_kind=context.record.kind if context and context.record else None,
+            previous=history[-1] if history else None,
+            needs=needs,
+        )
     return PlannerFacts(
         role=actor.role,
         packages=packages,
@@ -1324,6 +1337,7 @@ async def planner_facts(
         people_access=people,
         bookings=booked,
         page_hint=page_hint(context),
+        areas=areas,
     )
 
 
@@ -1450,6 +1464,8 @@ async def _corrected_plan(
     message: str,
     facts: PlannerFacts,
     resolve: Callable[[WorkspaceProposal], Awaitable[_Planned]],
+    *,
+    widen_enabled: bool = True,
 ) -> tuple[WorkspaceProposal, _Planned]:
     """Plan and resolve the turn with at most two model calls: one correction per turn.
 
@@ -1460,11 +1476,28 @@ async def _corrected_plan(
     ``resolve`` and every gate in it again: a content question gets one plain question with no
     options, a named violation gets the M7 fallback (``_fallback``), and anything else
     resolves normally. A refusal with no named reason, and any planner error, is raised as is.
+
+    A scoped turn (``facts.areas`` set) has one more reason for the second call: the first plan
+    names an action outside the selected areas, or the first call was refused with no named
+    reason. That call widens: it uses the full prompt and is final. A note re-plan keeps the
+    scoped prompt. ``widen_enabled=False`` (the smoke's ``--no-widen``) never widens.
     """
     note: str | None = None
+    widen = False
     for final in (False, True):
         try:
-            proposal = await planner.plan(message, facts, note=note)
+            if widen:
+                proposal = await planner.plan(message, facts, note=note, widen=True)
+            else:
+                proposal = await planner.plan(message, facts, note=note)
+            if (
+                not final
+                and widen_enabled
+                and facts.areas is not None
+                and proposal.action not in allowed_actions(facts.areas)
+            ):
+                widen = True
+                continue
             if _corrects_content(proposal, message, facts):
                 if not final:
                     note = CONTENT_NOTE
@@ -1474,6 +1507,9 @@ async def _corrected_plan(
             return proposal, await resolve(proposal)
         except PlannerInvalidOutput as exc:
             if exc.reason not in CORRECTION_NOTES:
+                if not final and widen_enabled and facts.areas is not None:
+                    widen = True
+                    continue
                 raise
             if final:
                 return _fallback(exc.reason, message, facts)

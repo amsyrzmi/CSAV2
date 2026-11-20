@@ -81,10 +81,18 @@ STAGING = Target(
     # is a reviewed change to the flags file, after the checks in deploy/PRODUCTION.md.
     # The HR create-defaults action (gateway); unset is off. Turning it on is a reviewed change
     # to the flags file, after the content review (docs/hr/DEFAULT_TEMPLATES_REVIEW.md) is signed.
-    optional_keys=frozenset({"CSA_STAGING_TRAINING_VIDEO", "CSA_STAGING_HR_DEFAULT_TEMPLATES"}),
+    # The planner's scoped prompts (gateway); unset is off.
+    optional_keys=frozenset(
+        {
+            "CSA_STAGING_TRAINING_VIDEO",
+            "CSA_STAGING_HR_DEFAULT_TEMPLATES",
+            "CSA_STAGING_WORKSPACE_AREA_PROMPTS",
+        }
+    ),
     optional_values={
         "CSA_STAGING_TRAINING_VIDEO": ("false", "true"),
         "CSA_STAGING_HR_DEFAULT_TEMPLATES": ("false", "true"),
+        "CSA_STAGING_WORKSPACE_AREA_PROMPTS": ("false", "true"),
     },
     host_file=None,
     host_required_keys=frozenset(),
