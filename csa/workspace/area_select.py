@@ -160,4 +160,9 @@ def select_areas(
         if area != "general":
             found.add(area)
         found |= word_rule_areas(previous.message)
+    if found == {"products"}:
+        # Measured on the real model: the products-only prompt (about 7.9k chars) is too thin;
+        # product_stock-en-1 scored 7-8/10 with products alone and 10/10 with any second area.
+        # Inbox is the smallest companion (about 13k chars).
+        found.add("inbox")
     return frozenset(found) if found else None
