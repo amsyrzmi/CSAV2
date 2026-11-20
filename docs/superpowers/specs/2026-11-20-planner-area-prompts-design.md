@@ -24,7 +24,7 @@ area's text cannot change what the model does in another area, (b) a one-area pr
 
 ## Non-goals and anti-goals
 
-- No second model call and no model-based router: the area choice is deterministic server code.
+- No new model call per turn. The deterministic selector is server code; the decider (below) answers inside the routing request the service already sends, never in a request of its own.
 - No change to the contract (`PlannerOutput` still validates the full action union), the executors,
   the confirm flow, migrations or the console. No change of model, temperature or token limits.
 - No change of notation in the first build: the JSON schema stays the notation, filtered to the
@@ -54,10 +54,16 @@ shapes come with it through the schema filter (reachable definitions).
 Fact bullets ("present when ...") are included when the fact is present in `PlannerFacts`, not when an
 area is guessed: the fact is exactly what the server already decided to read.
 
-## The selector (deterministic, no model)
+## The selector
 
-`select_areas(message, page_context, previous_action, facts) -> frozenset[Area] | None`, a pure
-function. Signals, unioned (it errs on including more, like `Needs` in `csa/workspace/routing.py`):
+Two layers: a deterministic selector (phase A) and the routing decider's answers added to it (phase B). The
+result is always the union, so the decider can add an area and never remove one, exactly as for
+`Needs` in `csa/workspace/routing.py`.
+
+### Phase A: deterministic
+
+`select_areas(message, page_context, previous_turn, needs, facts) -> frozenset[Area] | None`, a pure
+function. Signals, unioned (it errs on including more):
 
 1. The open console tab (`page_context.tab`): `hr` to hr, `email` to email, `inbox` to inbox and email,
    `bookings` to bookings, `training_library` to training, `business` to products; other tabs add
@@ -68,10 +74,25 @@ function. Signals, unioned (it errs on including more, like `Needs` in `csa/work
 3. The previous turn's action (`history[-1].action`), so follow-ups ("the rest", a picked person, an
    answer to a clarification) stay in the area of the turn they continue.
 4. A colleague pick ("Use employee ... for: ...") keeps email.
+5. `Needs` (the fact reads the service already decided from the word rules and the routing decider): `mail` and `team` select email, `training` selects training, `people` selects hr, `manager` selects email and hr. The always-present `bookings` fact does not select bookings.
+6. The open record's kind (`RecordRef.kind`): conversation and approval select inbox, order and product select products, employee selects hr, training_request and training_item select training, draft selects email.
+7. Follow-ups: the previous turn's action when it carries an area; because the most common follow-up is stored as `clarification`, the word rules also run over the previous turn's message.
 
 If no signal fires, the selector returns None and the full prompt (today's) is used. A scoped prompt
 is general plus the union of the selected areas. A selected set of two or more areas is allowed and
-normal (the cross-area case "email Aina about her leave" selects email and hr).
+normal (the cross-area case "email Aina about her leave" selects email and hr). Fact payloads and
+fact bullets follow the selected areas too: the always-present bookings clock is sent only when
+bookings is selected.
+
+### Phase B: the routing decider (Jev), in this project
+
+How it is wired today: `route_facts` sends Jev one request with five yes/no questions (manager, mail, team, training, people) through `Decider.decide`, mode set per area by `ASSISTANT_DECIDER_ROUTING`: `llm` (Jev not called), `shadow` (the word rules decide, Jev runs beside and both answers are logged; production is here), `cascade` (Jev decides each question at or above its confidence floor `ASSISTANT_JEV_FLOOR_NOUL`, the word rules otherwise). A Jev error or the 2 s timeout falls back to the word rules.
+
+Phase B adds one yes/no question per area (`needs:area:email`, `inbox`, `training`, `hr`, `bookings`, `products`) to that same request, and the result is the deterministic set plus every area Jev answers yes to. So: no extra request or call per turn (in `llm` mode there is no call at all; in `shadow` and `cascade` the call already happens), and nothing changes when Jev is down. `route_facts` returns the fact needs and the area needs from one request.
+
+What it needs, and who does it: (a) the labels for the Jev evaluation (`docs/superpowers/evals/assistant_jev_labels.json`, English and Malay) gain area questions, and the owner runs `scripts/assistant_jev_eval.py` with their own key (hidden prompt) to see agreement per area question; (b) while production routing stays in `shadow`, the area answers are only logged next to the deterministic ones (typed answers, no message text), which gives a real-traffic comparison for free; (c) the decider's answers change a prompt only in `cascade`, so turning routing to `cascade` on staging and then production is a separate pull request to `deploy/*-rollout.env`, made after the evaluation meets its target and the owner says so.
+
+The planner smoke harness has no decider (it uses the word rules), so phase B is not measured by the planner gate; it is measured by the Jev evaluation and the shadow log.
 
 ## Safety net: out-of-area output
 
@@ -79,6 +100,10 @@ normal (the cross-area case "email Aina about her leave" selects email and hr).
 areas returns a valid contract. The server checks `proposal.action` against the selected areas'
 actions; if it is outside, the turn's one allowed re-plan (`_corrected_plan`, at most two model calls
 per turn today) runs with the full prompt and is final. This costs a second call only on that failure.
+The same widening applies when the first call raises a `PlannerInvalidOutput` with no named reason
+while the prompt was scoped (today that is a 502; a scoped prompt that produces a broken contract, as
+the malformed-JSON case in #170 did, gets the full prompt once). A re-plan for a content or rule note
+keeps the scoped prompt. The second call is final in every case, as today.
 A wrong answer that stays inside the selected actions (for example `clarification` where an
 unselected area's action was right) is not detectable; the over-inclusive selector and the gate's
 cross-area cases are what bound it.
@@ -99,6 +124,7 @@ approval click. A rollback is the switch back to off (the full prompt is unchang
 - Offline, no model: for every smoke case the selector returns a set that includes the area of each
   expected action, or None. A second offline test reports how many cases get a scoped prompt (target:
   at least 90%) and that no area is selected for a case that expects an action of another area only.
+- The smoke harness gets a `--no-widen` option used for gate runs, so a selector miss is not hidden by the rescuing second call; the harness already marks a re-planned sample, and the PR reports the share of samples that widened per area (a ceiling of 10% fails the gate; unit tests with a fake client cover the widening itself).
 - Model gate: `scripts/smoke_compare.py` (#170) between a same-day baseline and the candidate, whole
   file at `--repeat 5`: no case falls by more than one sample, a case that was 5/5 stays at 4/5 or
   better, the total does not fall. A violating case is rerun alone at `--repeat 10`; a case that
@@ -119,10 +145,15 @@ fails when an action, fact bullet or rule has no area (a new HR action cannot be
 
 1. **Deterministic area selector, filtered JSON schema, one call (chosen, by the owner).** Described
    above: no extra latency, testable offline, rolls back with a switch, one variable changed.
-2. **Selector assisted by the routing decider (Jev).** It could add areas, never remove one, like the
-   fact reads. It adds a model call (about 0.4 s and a failure mode) and is in shadow on production
-   today. Deferred: it can be added to the selector later without changing anything else.
+2. **Selector assisted by the routing decider (Jev).** Chosen as phase B on the owner's instruction (2026-11-20), after the deterministic phase A: the decider's area answers ride the existing routing request, add areas and never remove one. It is not live on production until routing is turned to `cascade` by a separate pull request.
 3. **Restructure HR only first.** The owner chose to restructure every area in this round.
+
+## Decisions I made after the builder check (the owner can change any)
+
+- `plan` is included with any of bookings, training, inbox or email (it is short and a single-area multi-change request is valid).
+- The smoke harness and case schema are extended inside this project: a per-case expected-areas annotation (the offline test is trivial for the 37 cases that expect only answer, navigate or clarification), page tab and open-record facts so inbox, products and open-video cases exist (today 96 of 99 cases have no tab and none expect `inbox_decision` or `product_stock_read`), and the cross-area and follow-up cases. This is the largest part of the test work.
+- Gate counts a pass-after-widening as a pass but reports the widened share (ceiling 10%).
+- The build assumes the planner and `contracts.py` can change on main while it runs (other work adds actions): the area-completeness test fails on any unassigned action, and the baseline is retaken on the day of each gate run. The owner can tell me if a planner change is known to be coming.
 
 ## Left to the builder
 
