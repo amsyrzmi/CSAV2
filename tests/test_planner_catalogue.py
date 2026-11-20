@@ -1,4 +1,4 @@
-"""The compact action catalogue the planner prompt is built from (generated from the contract)."""
+"""The compact action catalogue generated from the planner contract (a candidate prompt form)."""
 
 from __future__ import annotations
 

@@ -30,8 +30,18 @@ def parse_rates(text: str) -> Rates:
     return rates
 
 
+def _totals(base: Rates, cand: Rates) -> tuple[int, int, int]:
+    """Samples passing on the baseline, on the candidate (baseline cases only), and possible."""
+    base_wins = sum(w for w, _ in base.values())
+    cand_wins = sum(cand[case][0] for case in base if case in cand)
+    return base_wins, cand_wins, sum(n for _, n in base.values())
+
+
 def compare(base: Rates, cand: Rates) -> list[str]:
     """The gate's violations as printable lines; an empty list means the candidate passes."""
+    for name, rates in (("baseline", base), ("candidate", cand)):
+        if not rates:
+            return [f"VIOLATION no RATE lines in the {name} file (was --repeat 2 or more used?)"]
     samples = {n for _, n in (*base.values(), *cand.values())}
     if len(samples) > 1:
         return ["VIOLATION different --repeat in the two files: " + ", ".join(map(str, samples))]
@@ -46,8 +56,7 @@ def compare(base: Rates, cand: Rates) -> list[str]:
     violations.extend(
         f"VIOLATION {case}: missing from the baseline" for case in sorted(set(cand) - set(base))
     )
-    base_total = sum(w for w, _ in base.values())
-    cand_total = sum(w for case, (w, _) in cand.items() if case in base)
+    base_total, cand_total, _ = _totals(base, cand)
     if cand_total < base_total:
         violations.append(f"VIOLATION total {base_total} to {cand_total} samples passing")
     return violations
@@ -61,16 +70,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     base = parse_rates(Path(args[0]).read_text())
     cand = parse_rates(Path(args[1]).read_text())
-    for case in sorted(set(base) & set(cand)):
-        (was, n), (now, _) = base[case], cand[case]
-        if now != was:
-            print(f"{'UP' if now > was else 'DOWN'} {case} {was}/{n} to {now}/{n}")
-    n_all = next(iter(base.values()), (0, 0))[1]
-    shared = set(base) & set(cand)
-    base_total = sum(base[c][0] for c in shared)
-    cand_total = sum(cand[c][0] for c in shared)
-    print(f"total {base_total}/{len(shared) * n_all} to {cand_total}/{len(shared) * n_all}")
     violations = compare(base, cand)
+    # With no RATE lines or different sample counts there is nothing meaningful to print.
+    if not any("no RATE lines" in v or "different --repeat" in v for v in violations):
+        for case in sorted(set(base) & set(cand)):
+            (was, n), (now, _) = base[case], cand[case]
+            if now != was:
+                print(f"{'UP' if now > was else 'DOWN'} {case} {was}/{n} to {now}/{n}")
+        base_total, cand_total, possible = _totals(base, cand)
+        print(f"total {base_total}/{possible} to {cand_total}/{possible}")
     for line in violations:
         print(line)
     return 1 if violations else 0

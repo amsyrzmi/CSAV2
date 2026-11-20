@@ -67,3 +67,34 @@ def test_main_exits_zero_and_prints_totals(
     assert main(argv) == 0
     out = capsys.readouterr().out
     assert "a-1" in out and "total 4/5 to 5/5" in out and "VIOLATION" not in out
+
+
+def test_empty_inputs_are_a_violation_not_a_pass() -> None:
+    """Two runs without RATE lines (a ``--repeat 1`` run, or a setup error) compared nothing."""
+    assert any("no RATE lines" in line for line in compare({}, {}))
+    assert any("no RATE lines" in line for line in compare(BASE, {}))
+    assert any("no RATE lines" in line for line in compare({}, BASE))
+
+
+def test_main_exits_one_for_files_with_no_rate_lines(tmp_path: Path) -> None:
+    argv = _files(tmp_path, "PASS a-1 action=answer\n1 passed, 0 failed\n", "")
+    assert main(argv) == 1
+
+
+def test_main_prints_no_numbers_when_the_repeat_differs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = _files(tmp_path, "RATE a-1 5/5\nRATE b-1 4/5\n", "RATE a-1 6/10\nRATE b-1 10/10\n")
+    assert main(argv) == 1
+    out = capsys.readouterr().out
+    assert "different --repeat" in out
+    assert "to 6/5" not in out and "total" not in out.replace("VIOLATION", "")
+
+
+def test_totals_line_and_total_violation_count_the_same_cases(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = _files(tmp_path, "RATE a-1 5/5\nRATE b-1 4/5\n", "RATE a-1 5/5\nRATE z-9 5/5\n")
+    assert main(argv) == 1
+    out = capsys.readouterr().out
+    assert "total 9/10 to 5/10" in out and "VIOLATION total 9 to 5" in out

@@ -1,4 +1,9 @@
-"""The compact action catalogue in the planner's system prompt, generated from the contract.
+"""A compact action catalogue generated from the planner's contract (not used by the planner yet).
+
+The planner's prompt still embeds the JSON schema: a prompt built from this catalogue was 40%
+smaller and scored 479/495 against 475/495, but failed the smoke gate on two cases (see the
+Decision section of the 2026-11-20 planner prompt restructure design). The generator is kept for
+the next design round (area-scoped prompts).
 
 ``compact_catalogue`` turns ``PlannerOutput.model_json_schema()`` into one line per action (its
 fields, ``?`` marking the optional ones, enums inline, nested models expanded) with the action's
@@ -7,8 +12,8 @@ become schema ``description`` text and are load-bearing prompt text: ``Recipient
 group recipient needs ``group``, and a catalogue without it produced invalid contracts.
 
 A schema construct the generator does not know raises instead of being dropped, so a new pydantic
-shape cannot silently vanish from the prompt. This module takes a schema dict and does not import
-the planner (the planner imports it).
+shape cannot silently vanish from a prompt. This module takes a schema dict and does not import
+the planner.
 """
 
 from __future__ import annotations
@@ -100,7 +105,7 @@ def _note(node: dict[str, Any]) -> str:
 
 
 def compact_catalogue(schema: dict[str, Any]) -> str:
-    """The prompt text that replaces the JSON schema; see the module docstring."""
+    """The catalogue text that would replace the prompt's JSON schema (see the module docstring)."""
     defs = schema["$defs"]
     mapping = schema["properties"]["proposal"]["discriminator"]["mapping"]
     lines = [
