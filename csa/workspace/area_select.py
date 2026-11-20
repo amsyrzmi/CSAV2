@@ -71,6 +71,9 @@ _AREA_WORDS: dict[Area, re.Pattern[str]] = {
         r"find|look ?up|search|cari(?:kan)?|directory"
         r"|direktori|draft|drafts|drafted|compose|send|sending|sent|cc|bcc|recipients?|memo"
         r"|subscribers?|newsletter|remind|hantar|draf|penerima|ingatkan|langganan|pelanggan"
+        # Telling someone something is an email ("tell me" and "let me know" are conversation).
+        r"|tell (?!me\b|us\b)\w+|let (?!me\b|us\b)\w+ know|notify|inform|message|write to"
+        r"|beritahu|maklumkan|tulis"
     ),
     # Strong inbox words only; the weak ones (approve, reject, lulus, tolak) are _INBOX_WEAK.
     "inbox": _words(r"held|hold|customers?|pelanggan|conversations?|perbualan|ditahan|tahan"),
@@ -88,6 +91,7 @@ _AREA_WORDS: dict[Area, re.Pattern[str]] = {
         r"book|books|booked|booking|bookings|appointments?|meetings?|rooms?|move|moves|moved"
         r"|moving|reschedul\w*|cancel\w*|free|busy|availab\w+|slots?|tempah\w*|menempah"
         r"|batal\w*|kosong|sibuk|pindah\w*|temujanji|bilik|mesyuarat|jadual"
+        r"|schedul\w*|calls?|calendar|kalendar"
     ),
     # The TikTok guard prose belongs to products only, so every word of a TikTok order, refund,
     # cancellation or stock request selects it.
@@ -95,6 +99,9 @@ _AREA_WORDS: dict[Area, re.Pattern[str]] = {
         r"stock|stocks|inventory|stok|inventori|tik ?tok|orders?|refunds?|sku|skus|products?"
         r"|produk|pesanan|shipping|shipment|ship|listings?|variants?|price|harga"
         r"|available|availability|have (?:any|the)|in stock|sold out|restock\w*|habis|ada stok"
+        # A stock-count question that never says "stock".
+        r"|how many\b[^?.!]{0,40}\b(?:do we have|have we got|are left|in stock)"
+        r"|berapa banyak\b[^?.!]{0,40}\b(?:kita ada|yang ada|tinggal|baki)"
     ),
 }
 

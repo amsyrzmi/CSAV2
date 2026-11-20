@@ -493,8 +493,8 @@ planner, decides what that member sees.
 
 | Prompt | Setup | Expected | Smoke id |
 | --- | --- | --- | --- |
-| Approve this reply | Customer conversation open with a held reply | An approve card for that held reply (smoke: an `inbox_decision`, never an answer or a question) | `inbox_decision-en-1` |
-| Tolak balasan ini | Customer conversation open with a held reply | Kad tolak untuk balasan itu (smoke: an `inbox_decision`) | `inbox_decision-ms-1` |
+| Approve this reply | Customer conversation open with a held reply | An approve card for that held reply | manual (the planner smoke case `inbox_decision-en-1` checks only the plan, with a scripted resolver, not the real approve flow) |
+| Tolak balasan ini | Customer conversation open with a held reply | Kad tolak untuk balasan itu | manual (the planner smoke case `inbox_decision-ms-1` checks only the plan, with a scripted resolver, not the real approve flow) |
 
 ## Don't send
 
@@ -598,6 +598,7 @@ data is synthetic. A PASS checks only the action and the fields named, as above.
 | Tandakan Razak akan berhenti, hari terakhir 20 Disember 2026, dia letak jawatan | The same | The same, in Malay | `scoped_answer-ms-1` |
 | Is Room A free tomorrow? | The Bookings service not active | An answer that Bookings is not active, no booking card | `scoped_answer-en-5` |
 | Please cancel order 1042 on TikTok Shop and refund the customer | Business active | An answer that it is done in TikTok Shop Seller Center, no stock read | `scoped_answer-en-6` |
+| Aina is leaving, her last day is this Friday, she resigned | HR owner, Bookings open (the clock reads Thursday 5 November 2026) | A leave with last_day 2026-11-06 and reason resigned (the company's clock reaches a scoped HR turn). ADDED AFTER THE GATE, NOT MEASURED: it needs one confirm smoke run before the area prompts are switched on | `hr_date-en-1` |
 
 ## Customer persona and planner fixes (2026-11-09)
 

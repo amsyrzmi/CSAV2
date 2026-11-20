@@ -52,7 +52,7 @@ from csa.workspace.contracts import (
     WorkspaceProposal,
     _Contract,
 )
-from csa.workspace.prompt_areas import Area, build_prompt
+from csa.workspace.prompt_areas import AREAS, Area, build_prompt
 from csa.workspace.rules import CONTRACT_INVALID
 
 PlannerProposal = Annotated[
@@ -301,13 +301,15 @@ _MESSAGE_TAG = re.compile(r"<(?=/?(?:message|correction))", re.IGNORECASE)
 
 # The facts whose payload belongs to areas: it travels only when one of them is selected.
 # Everything else (history, the record summary, the page hint, role and packages) is general.
+# The company's clock (bookings) is general too: it is the only date the model has, so any turn
+# may need it ("his last day is next Friday"); it travels whenever any area is selected.
 _FACT_AREAS: dict[str, frozenset[Area]] = {
     "my_manager": frozenset({"email", "hr"}),
     "mailbox_threads": frozenset({"email"}),
     "my_team": frozenset({"email"}),
     "my_employee": frozenset({"training"}),
     "people_access": frozenset({"hr"}),
-    "bookings": frozenset({"bookings"}),
+    "bookings": frozenset(AREAS),
 }
 
 

@@ -1462,6 +1462,15 @@ def _fallback(
     return question, _Planned(result=live, stored=stored)
 
 
+def _log_scoped_turn(facts: PlannerFacts, cause: str, action: str) -> None:
+    """One content-free line per scoped turn: the selected areas, why (if at all) it widened to
+    the full prompt, and the final action. It lets an in-area miss (the model followed a schema
+    that was too narrow and answered or asked) be audited: widening cannot see those. No message
+    text, no ids."""
+    if facts.areas is not None:
+        logger.info("workspace_scoped_turn", areas=sorted(facts.areas), widen=cause, action=action)
+
+
 async def _corrected_plan(
     planner: WorkspacePlanner,
     message: str,
@@ -1487,6 +1496,7 @@ async def _corrected_plan(
     """
     note: str | None = None
     widen = False
+    cause = "none"  # why the turn widened: none, out_of_area or invalid_output
     for final in (False, True):
         try:
             if widen:
@@ -1500,6 +1510,7 @@ async def _corrected_plan(
                 and proposal.action not in allowed_actions(facts.areas)
             ):
                 widen = True
+                cause = "out_of_area"
                 continue
             if _corrects_content(proposal, message, facts):
                 if not final:
@@ -1507,15 +1518,21 @@ async def _corrected_plan(
                     continue
                 question = _TEXT[facts.language]["content_question"]
                 proposal = ClarificationProposal(action="clarification", question=question)
-            return proposal, await resolve(proposal)
+            planned = await resolve(proposal)
+            _log_scoped_turn(facts, cause, proposal.action)
+            return proposal, planned
         except PlannerInvalidOutput as exc:
             if exc.reason not in CORRECTION_NOTES:
                 if not final and widen_enabled and facts.areas is not None:
                     widen = True
+                    cause = "invalid_output"
                     continue
+                _log_scoped_turn(facts, cause, "refused")
                 raise
             if final:
-                return _fallback(exc.reason, message, facts)
+                fallback = _fallback(exc.reason, message, facts)
+                _log_scoped_turn(facts, cause, fallback[0].action)
+                return fallback
             note = CORRECTION_NOTES[exc.reason]
     raise AssertionError("the second plan is always final")
 
