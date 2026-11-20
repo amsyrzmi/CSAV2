@@ -48,11 +48,6 @@ _RECORD_AREAS: dict[str, frozenset[Area]] = {
 _COLLEAGUE_PICK = re.compile(r"^Use employee \S+ for: ")
 
 
-# "who is X" is a name lookup (email's directory_lookup) and a people question (hr's people_query
-# and hr_process_read: "who is joining next month"), so it selects both.
-_WHO = r"who is|who's|who was|siapa|siapakah"
-
-
 def _words(pattern: str) -> re.Pattern[str]:
     return re.compile(rf"\b(?:{pattern})\b", re.IGNORECASE)
 
@@ -60,23 +55,30 @@ def _words(pattern: str) -> re.Pattern[str]:
 # Trigger words of each area's action bullets, in English and Malay. The mail, team, training,
 # people and manager words of the fact reads are added by ``word_rule_areas`` from
 # ``csa.workspace.words``. A word shared by two areas is listed in both: over-inclusion is the rule.
+# "who is X" is a name lookup (email's directory_lookup) and a people question (hr's people_query
+# and hr_process_read: "who is joining next month"), so it selects both, but only as a weak
+# signal: when any other word rule matched, that rule decides ("who is onboarding" is hr).
+_WHO_WORDS = _words(r"who is|who's|who was|siapa|siapakah")
+# Weak inbox words also appear in hr task talk ("approve Aina's laptop task"): they select inbox
+# unless an hr task word is present and no strong inbox word is.
+_INBOX_WEAK = _words(r"approv(?:e|es|ed|ing|al|als)|reject(?:s|ed|ing|ion)?|lulus(?:kan)?|tolak")
+_HR_TASK_WORDS = _words(r"tasks?|tugasan|steps?|langkah|onboarding|offboarding")
+
 _AREA_WORDS: dict[Area, re.Pattern[str]] = {
     # directory_lookup and inbox_summary are email-only actions: a name lookup selects email so
     # that an hr or bookings turn naming a person can still use directory_lookup.
     "email": _words(
-        rf"{_WHO}|find|look ?up|search|cari(?:kan)?|directory"
+        r"find|look ?up|search|cari(?:kan)?|directory"
         r"|direktori|draft|drafts|drafted|compose|send|sending|sent|cc|bcc|recipients?|memo"
         r"|subscribers?|newsletter|remind|hantar|draf|penerima|ingatkan|langganan|pelanggan"
     ),
-    "inbox": _words(
-        r"approv(?:e|es|ed|ing|al|als)|reject(?:s|ed|ing|ion)?|held|hold|customers?|pelanggan"
-        r"|conversations?|perbualan|lulus(?:kan)?|tolak|ditahan|tahan"
-    ),
+    # Strong inbox words only; the weak ones (approve, reject, lulus, tolak) are _INBOX_WEAK.
+    "inbox": _words(r"held|hold|customers?|pelanggan|conversations?|perbualan|ditahan|tahan"),
     "training": _words(
         r"videos?|transcripts?|library|first aid|mohon|belajar|lessons?|pustaka|perpustakaan"
     ),
     "hr": _words(
-        rf"{_WHO}|hr|onboarding|offboarding|tasks?|tugasan|steps?|langkah|process(?:es)?|proses"
+        r"hr|onboarding|offboarding|tasks?|tugasan|steps?|langkah|process(?:es)?|proses"
         r"|overdue|tertunggak|lewat|running late"
         r"|profiles?|profil|leave|leaves|leaving|cuti|berhenti|resign\w*|hire[sd]?|hiring"
         r"|staff|people|kakitangan|pekerja|job titles?|jawatan|start date|tarikh mula|department"
@@ -116,6 +118,10 @@ def word_rule_areas(text: str) -> frozenset[Area]:
     for area, pattern in _AREA_WORDS.items():
         if pattern.search(text):
             found.add(area)
+    if _INBOX_WEAK.search(text) and ("inbox" in found or not _HR_TASK_WORDS.search(text)):
+        found.add("inbox")
+    if not found and _WHO_WORDS.search(text):
+        found |= {"email", "hr"}
     return frozenset(found)
 
 
