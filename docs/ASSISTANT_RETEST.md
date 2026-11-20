@@ -493,8 +493,8 @@ planner, decides what that member sees.
 
 | Prompt | Setup | Expected | Smoke id |
 | --- | --- | --- | --- |
-| Approve this reply | Customer conversation open with a held reply | An approve card for that held reply (smoke: an `inbox_decision`, never an answer or a question) | `inbox_decision-en-1` |
-| Tolak balasan ini | Customer conversation open with a held reply | Kad tolak untuk balasan itu (smoke: an `inbox_decision`) | `inbox_decision-ms-1` |
+| Approve this reply | Customer conversation open with a held reply | An approve card for that held reply | manual (the planner smoke case `inbox_decision-en-1` checks only the plan, with a scripted resolver, not the real approve flow) |
+| Tolak balasan ini | Customer conversation open with a held reply | Kad tolak untuk balasan itu | manual (the planner smoke case `inbox_decision-ms-1` checks only the plan, with a scripted resolver, not the real approve flow) |
 
 ## Don't send
 
