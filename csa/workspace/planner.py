@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from functools import cache
 from typing import Annotated, Literal, Union
 from uuid import UUID
 
@@ -51,7 +52,7 @@ from csa.workspace.contracts import (
     WorkspaceProposal,
     _Contract,
 )
-from csa.workspace.prompt_areas import build_prompt
+from csa.workspace.prompt_areas import Area, build_prompt
 from csa.workspace.rules import CONTRACT_INVALID
 
 PlannerProposal = Annotated[
@@ -283,6 +284,12 @@ def detect_language(text: str) -> Language | None:
 
 
 SYSTEM_PROMPT = build_prompt(PlannerOutput.model_json_schema(), None)
+
+
+@cache
+def scoped_prompt(areas: frozenset[Area]) -> str:
+    """The system prompt for a turn that selected ``areas``: only their actions and bullets."""
+    return build_prompt(PlannerOutput.model_json_schema(), areas)
 
 
 # The tags that wrap the message and the server's note; the message may not open or close one.

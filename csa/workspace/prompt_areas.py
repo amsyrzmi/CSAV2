@@ -10,6 +10,7 @@ This module takes the schema as an argument and must not import ``planner`` (pla
 
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -18,8 +19,8 @@ Area = Literal["email", "inbox", "training", "hr", "bookings", "products"]
 AREAS: tuple[Area, ...] = ("email", "inbox", "training", "hr", "bookings", "products")
 
 # Every action of PlannerOutput's discriminator mapping and the area that owns it. ``general``
-# actions are in every prompt. ``plan`` travels with bookings (its steps are booking, training,
-# inbox and email actions; the selector adds it for turns that select two or more of them).
+# actions are in every prompt. ``plan`` is listed under bookings, but ``allowed_actions`` adds it
+# (with its step actions' shapes) whenever any of bookings, training, inbox or email is selected.
 ACTION_AREA: dict[str, Area | Literal["general"]] = {
     "answer": "general",
     "navigate": "general",
@@ -530,12 +531,79 @@ BULLETS: tuple[Bullet, ...] = (
 )
 
 
+# The areas whose actions can be steps of a ``plan`` (booking_action, training_submit,
+# inbox_decision, email_batch); selecting any of them brings ``plan`` and the step shapes.
+PLAN_AREAS: frozenset[Area] = frozenset({"bookings", "training", "inbox", "email"})
+
+
+def allowed_actions(areas: frozenset[Area]) -> frozenset[str]:
+    """The actions a scoped prompt offers: general ones, the selected areas', and ``plan``.
+
+    ``plan`` is allowed with any of bookings, training, inbox or email. Its steps' shapes come
+    with it through the schema definitions, but the top-level union lists only these actions.
+    """
+    actions = {name for name, area in ACTION_AREA.items() if area == "general" or area in areas}
+    if areas & PLAN_AREAS:
+        actions.add("plan")
+    else:
+        actions.discard("plan")
+    return frozenset(actions)
+
+
+def _ref_names(node: Any) -> set[str]:
+    names: set[str] = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "$ref" and isinstance(value, str):
+                names.add(value.rsplit("/", 1)[-1])
+            else:
+                names |= _ref_names(value)
+    elif isinstance(node, list):
+        for item in node:
+            names |= _ref_names(item)
+    return names
+
+
+def filter_schema(schema: dict[str, Any], actions: frozenset[str]) -> dict[str, Any]:
+    """A copy of the planner's schema whose top-level proposal union lists only ``actions``.
+
+    The discriminator mapping and the ``oneOf`` lose the other actions, and ``$defs`` keeps only
+    what is still reachable by ``$ref`` (so ``plan``'s step shapes stay when ``plan`` does,
+    without becoming top-level actions). ``plan``'s own ``steps`` union is left as it is.
+    """
+    out = copy.deepcopy(schema)
+    proposal = out["properties"]["proposal"]
+    mapping = {a: ref for a, ref in proposal["discriminator"]["mapping"].items() if a in actions}
+    kept = {ref.rsplit("/", 1)[-1] for ref in mapping.values()}
+    proposal["discriminator"]["mapping"] = mapping
+    proposal["oneOf"] = [member for member in proposal["oneOf"] if _ref_names(member) <= kept]
+    defs = out["$defs"]
+    reachable: set[str] = set()
+    pending = _ref_names({k: v for k, v in out.items() if k != "$defs"})
+    while pending:
+        name = pending.pop()
+        if name in reachable:
+            continue
+        reachable.add(name)
+        pending |= _ref_names(defs[name])
+    out["$defs"] = {name: body for name, body in defs.items() if name in reachable}
+    return out
+
+
 def build_prompt(schema: dict[str, Any], areas: frozenset[Area] | None) -> str:
-    """The system prompt; ``None`` gives the full prompt, today's byte for byte."""
-    schema_text = json.dumps(schema, separators=(",", ":"))
-    selected = [
-        bullet.text
-        for bullet in BULLETS
-        if areas is None or "general" in bullet.areas or bullet.areas & areas
-    ]
+    """The system prompt; ``None`` gives the full prompt, today's byte for byte.
+
+    With an areas set, the schema is filtered to ``allowed_actions(areas)`` and the bullets to
+    those of the selected areas plus the general ones. The ``plan`` bullet carries exactly the
+    areas that allow ``plan`` (a test pins that), so it never appears without the action.
+    """
+    if areas is None:
+        schema_text = json.dumps(schema, separators=(",", ":"))
+        selected = [bullet.text for bullet in BULLETS]
+    else:
+        actions = allowed_actions(areas)
+        schema_text = json.dumps(filter_schema(schema, actions), separators=(",", ":"))
+        selected = [
+            bullet.text for bullet in BULLETS if "general" in bullet.areas or bullet.areas & areas
+        ]
     return _HEAD + schema_text + "\n\nFacts:\n" + "\n".join(selected) + "\n"
