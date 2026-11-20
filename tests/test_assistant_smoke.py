@@ -16,7 +16,8 @@ from typing import Any
 import pytest
 from csa.decide.completion import CompletionError
 from csa.email.models import DraftProposal
-from csa.workspace.planner import PlannerOutput, detect_language
+from csa.workspace.planner import SYSTEM_PROMPT, PlannerOutput, detect_language
+from csa.workspace.prompt_areas import ACTION_AREA
 from csa.workspace.rules import ADDRESS
 from csa.workspace.service import REST_WORDS
 from pydantic import SecretStr, TypeAdapter, ValidationError
@@ -259,7 +260,8 @@ def test_smoke_output_is_content_free_and_exit_code(capsys: pytest.CaptureFixtur
     assert len(passed) == len(cases) - 1
     for line in passed:
         assert re.fullmatch(
-            r"PASS [a-z_]+-(en|ms)-\d+ action=[a-z_]+( replanned)?( mode_inferred)?", line
+            r"PASS [a-z_]+-(en|ms)-\d+ action=[a-z_]+( replanned)?( widened)?( mode_inferred)?",
+            line,
         ), line
     assert lines[-1] == f"{len(cases) - 1} passed, 1 failed"
 
@@ -824,3 +826,174 @@ def test_smoke_checks_the_mode_the_server_drafts_with_and_marks_an_inferred_one(
     # The planner's own (wrong) choice is kept, so it still fails.
     assert smoke.main(["--case", "email_batch-en-1"], client=WrongMode()) == 1
     assert "FAIL email_batch-en-1 action=email_batch fields" in capsys.readouterr().out
+
+
+# --- Areas, record facts, --areas and --no-widen ----------------------------------------------
+# Enabled in Task 6, once the new cross-area cases exist: until then most cases are single-area
+# on a bare page, so many have no signal and keep the full prompt.
+SCOPED_SHARE_ENFORCED = False
+SCOPED_SHARE_FLOOR = 0.9
+
+
+def _case(**overrides: Any) -> smoke.SmokeCase:
+    base: dict[str, Any] = {
+        "id": "compose-en-9",
+        "language": "en",
+        "message": "Email my manager that I will be late",
+        "facts": {"preset": "staff_basic"},
+        "expect": {"actions": ["email_compose"]},
+    }
+    return TypeAdapter(smoke.SmokeCase).validate_python({**base, **overrides})
+
+
+def test_expect_areas_rejects_an_unknown_area() -> None:
+    assert _case(expect={"actions": ["email_compose"], "areas": ["email"]}).expect.areas == [
+        "email"
+    ]
+    assert _case().expect.areas == []
+    with pytest.raises(ValidationError):
+        _case(expect={"actions": ["email_compose"], "areas": ["finance"]})
+    with pytest.raises(ValidationError):
+        _case(expect={"actions": ["email_compose"], "colour": "red"})
+
+
+def test_a_case_with_a_record_and_summary_reaches_the_planner_facts() -> None:
+    summary = "Synthetic open conversation about a late delivery."
+    case = _case(
+        facts={
+            "preset": "staff_basic",
+            "page_tab": "inbox",
+            "record": {"kind": "conversation", "id": "synthetic-conversation-1"},
+            "record_summary": summary,
+        }
+    )
+    facts = smoke.build_facts(case)
+    assert facts.page_context is not None
+    assert facts.page_context.tab == "inbox"
+    assert facts.page_context.record is not None
+    assert facts.page_context.record.kind == "conversation"
+    assert facts.page_context.record.id == "synthetic-conversation-1"
+    assert facts.record_summary == summary
+    assert smoke.build_facts(_case()).record_summary is None
+    assert smoke.build_facts(_case()).page_context.record is None  # type: ignore[union-attr]
+    with pytest.raises(ValidationError):
+        _case(facts={"preset": "staff_basic", "record_summary": "x" * 501})
+
+
+def test_areas_flag_scopes_the_facts_and_a_default_run_leaves_them_unset() -> None:
+    case = next(case for case in smoke.load_cases() if case.id == "compose-en-1")
+    assert smoke.build_facts(case).areas is None
+    assert smoke.build_facts(case, use_areas=False).areas is None
+    scoped = smoke.build_facts(case, use_areas=True).areas
+    assert scoped is not None
+    assert "email" in scoped
+
+    class Capturing(ScriptedModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.systems: list[str] = []
+
+        async def json_completion(
+            self,
+            schema: type[Any],
+            *,
+            system: str,
+            user: str,
+            timeout: float,
+            max_tokens: int = 1500,
+        ) -> Any:
+            if schema is PlannerOutput:
+                self.systems.append(system)
+            return await super().json_completion(
+                schema, system=system, user=user, timeout=timeout, max_tokens=max_tokens
+            )
+
+    default = Capturing()
+    assert smoke.main(["--case", case.id], client=default) == 0
+    assert default.systems == [SYSTEM_PROMPT]
+    with_areas = Capturing()
+    assert smoke.main(["--case", case.id, "--areas"], client=with_areas) == 0
+    assert len(with_areas.systems) == 1
+    assert with_areas.systems[0] != SYSTEM_PROMPT
+
+
+class OutOfAreaModel(ScriptedModel):
+    """Answers the first planner call with an action no email-scoped prompt offers, then
+    normally; records each call's system prompt."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.systems: list[str] = []
+
+    async def json_completion(
+        self, schema: type[Any], *, system: str, user: str, timeout: float, max_tokens: int = 1500
+    ) -> Any:
+        if schema is PlannerOutput:
+            self.systems.append(system)
+            if len(self.systems) == 1:
+                proposal = {"action": "training_ask", "question": SCRIPTED_TEXT}
+                return PlannerOutput.model_validate({"proposal": proposal})
+        return await super().json_completion(
+            schema, system=system, user=user, timeout=timeout, max_tokens=max_tokens
+        )
+
+
+def test_no_widen_shows_a_selector_miss_and_the_default_marks_a_widened_sample(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    case_id = "compose-en-1"
+    case = next(case for case in smoke.load_cases() if case.id == case_id)
+    scoped = smoke.build_facts(case, use_areas=True).areas
+    assert scoped is not None
+    assert "training" not in scoped  # the scripted action below is out of this scope
+
+    miss = OutOfAreaModel()
+    assert smoke.main(["--case", case_id, "--areas", "--no-widen"], client=miss) == 1
+    out = capsys.readouterr().out
+    assert f"FAIL {case_id} action=training_ask actions" in out
+    assert "widened" not in out
+    assert len(miss.systems) == 1
+
+    widened = OutOfAreaModel()
+    assert smoke.main(["--case", case_id, "--areas"], client=widened) == 0
+    out = capsys.readouterr().out
+    assert f"PASS {case_id} action=email_compose replanned widened" in out
+    assert len(widened.systems) == 2
+    assert widened.systems[1] == SYSTEM_PROMPT
+    _assert_content_free(out)
+
+    # With --repeat the RATE line keeps its shape for scripts/smoke_compare.py.
+    again = OutOfAreaModel()
+    assert smoke.main(["--case", case_id, "--areas", "--repeat", "2"], client=again) == 0
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert f"RATE {case_id} 2/2" in lines
+    assert lines[-1] == "2 passed, 0 failed"
+
+
+def _case_areas(case: smoke.SmokeCase) -> set[str]:
+    if case.expect.areas:
+        return set(case.expect.areas)
+    derived = {ACTION_AREA[action] for action in case.expect.actions}
+    return derived - {"general"}
+
+
+def test_selector_covers_the_expected_areas_of_every_case(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Offline, no model: the selector never leaves out an area a case's expected actions need
+    (it may select nothing, which keeps the full prompt)."""
+    cases = smoke.load_cases()
+    missed: list[str] = []
+    scoped = 0
+    for case in cases:
+        facts = smoke.build_facts(case, use_areas=True)
+        selected = facts.areas
+        scoped += selected is not None
+        if selected is not None and not _case_areas(case) <= selected:
+            missed.append(f"{case.id} missing {sorted(_case_areas(case) - selected)}")
+    assert missed == []
+    share = scoped / len(cases)
+    print(f"scoped prompt share: {scoped}/{len(cases)} = {share:.0%}")
+    if not SCOPED_SHARE_ENFORCED:
+        pytest.skip("scoped share >= 90% is enabled in Task 6 once the new cases exist")
+    assert share >= SCOPED_SHARE_FLOOR

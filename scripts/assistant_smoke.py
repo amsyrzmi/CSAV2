@@ -14,9 +14,11 @@ synthetic presets below.
 It runs inside the staging gateway container, which has the model key mounted::
 
     docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke [--repeat N] [--case ID]
+        [--areas [--no-widen]]
 
 Output is content-free: one ``PASS|FAIL <id> action=<action>`` line per sample, the failing
-field names after a failure, ``replanned`` when the one correction was used, ``mode_inferred``
+field names after a failure, ``replanned`` when the one correction was used, ``widened`` when
+a scoped prompt's miss was retried on the full prompt (``--areas`` only), ``mode_inferred``
 when a batch email's mode came from the server (the planner left it out), ``RATE <id> k/N`` per
 case with ``--repeat``, and a last ``N passed, M failed`` line. Never a message, model text,
 subject, body or address; the key is never printed. Exit 0 when every sample passes, 1 when any
@@ -48,6 +50,7 @@ from csa.decide.groq import GroqClient
 from csa.email.models import validated_draft
 from csa.email.service import EmailService
 from csa.metering.meter import NullMeter
+from csa.workspace.area_select import select_areas
 from csa.workspace.contracts import (
     AnswerProposal,
     ClarificationProposal,
@@ -59,6 +62,7 @@ from csa.workspace.contracts import (
     NavigateProposal,
     PageContext,
     PlanProposal,
+    RecordRef,
     TabKey,
     WorkspaceProposal,
 )
@@ -75,6 +79,7 @@ from csa.workspace.planner import (
     TeamMemberFact,
     WorkspacePlanner,
 )
+from csa.workspace.prompt_areas import Area
 from csa.workspace.rules import (
     BLANK_QUERY,
     CONTRACT_INVALID,
@@ -97,6 +102,7 @@ from csa.workspace.service import (
     _named_recipient_check,
     _Planned,
     _ready_batch,
+    word_rule_needs,
 )
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
@@ -147,18 +153,24 @@ class _Strict(BaseModel):
 
 class CaseFacts(_Strict):
     """A preset's synthetic facts, with optional overrides of the role and the open tab, and
-    the thread's earlier turns (for example a batch turn's ``resume_offset`` for "the rest")."""
+    the thread's earlier turns (for example a batch turn's ``resume_offset`` for "the rest"),
+    and an open record with its summary (synthetic text, as the turn path would build it)."""
 
     preset: Preset
     role: Role | None = None
     page_tab: TabKey | None = None
     history: list[PriorTurn] = Field(default_factory=list)
+    record: RecordRef | None = None
+    record_summary: str | None = Field(default=None, max_length=500)
 
 
 class Expect(_Strict):
     """Allowed actions (a set, not one action), forbidden ones and the optional checks."""
 
     actions: Annotated[list[ActionName], Field(min_length=1)]
+    # The prompt areas the expected actions need; empty means derive them from ``actions``. Only
+    # the offline selector check reads it (a case whose actions are all general needs none).
+    areas: list[Area] = Field(default_factory=list)
     not_actions: list[ActionName] = Field(default_factory=list)
     send: bool | None = None
     no_placeholder_options: bool = False
@@ -300,13 +312,27 @@ PRESETS: dict[str, _Preset] = {
 }
 
 
-def build_facts(case: SmokeCase) -> PlannerFacts:
+def build_facts(case: SmokeCase, *, use_areas: bool = False) -> PlannerFacts:
     """The facts the turn path would build for this message, from the case's preset.
 
     The turn path's own word triggers (``_MANAGER_WORDS`` and the rest in the turn service)
-    decide which facts are in the prompt, as on a real turn."""
+    decide which facts are in the prompt, as on a real turn. ``use_areas`` (``--areas``) also
+    sets ``areas`` from the selector, as the turn does behind its switch; off, ``areas`` stays
+    ``None`` and the prompt is the full one (the baseline)."""
     preset = PRESETS[case.facts.preset]
     message = case.message
+    history = list(case.facts.history)
+    areas = (
+        select_areas(
+            message,
+            tab=case.facts.page_tab or "overview",
+            record_kind=case.facts.record.kind if case.facts.record else None,
+            previous=history[-1] if history else None,
+            needs=word_rule_needs(message),
+        )
+        if use_areas
+        else None
+    )
     packages = [
         PackageState(key=key, status=preset.hr_status if key == "hr" else "active")
         for key in (*_PACKAGES, *preset.extra_packages)
@@ -314,8 +340,8 @@ def build_facts(case: SmokeCase) -> PlannerFacts:
     return PlannerFacts(
         role=case.facts.role or Role.TENANT_STAFF,
         packages=packages,
-        page_context=PageContext(tab=case.facts.page_tab or "overview"),
-        record_summary=None,
+        page_context=PageContext(tab=case.facts.page_tab or "overview", record=case.facts.record),
+        record_summary=case.facts.record_summary,
         language=case.language,
         my_manager=preset.manager if _MANAGER_WORDS.search(message) else None,
         mailbox_threads=preset.threads if _MAIL_WORDS.search(message) else None,
@@ -323,7 +349,8 @@ def build_facts(case: SmokeCase) -> PlannerFacts:
         my_employee=preset.employee if _TRAINING_WORDS.search(message) else None,
         people_access=preset.people_access if _PEOPLE_WORDS.search(message) else None,
         bookings=_booking_facts(preset),
-        history=list(case.facts.history),
+        history=history,
+        areas=areas,
     )
 
 
@@ -359,12 +386,15 @@ class Outcome:
     failed: list[str] = field(default_factory=list)
     replanned: bool = False
     mode_inferred: bool = False
+    widened: bool = False  # a call used the full prompt after a scoped one missed
 
     def line(self, case_id: str) -> str:
         status = "FAIL" if self.failed else "PASS"
         parts = [status, case_id, f"action={self.action}", *self.failed]
         if self.replanned:
             parts.append("replanned")
+        if self.widened:
+            parts.append("widened")
         if self.mode_inferred:
             parts.append("mode_inferred")
         return " ".join(parts)
@@ -381,6 +411,7 @@ class _Call:
     refusal: str | None = None
     locked: bool = False
     stop: str | None = None  # the server's answer instead of the card (a batch offset unknown)
+    widened: bool = False  # this call was the widening one: the full prompt
 
 
 class _RecordingPlanner(WorkspacePlanner):
@@ -393,7 +424,7 @@ class _RecordingPlanner(WorkspacePlanner):
     async def plan(
         self, message: str, facts: PlannerFacts, *, note: str | None = None, widen: bool = False
     ) -> WorkspaceProposal:
-        call = _Call()
+        call = _Call(widened=widen)
         self.calls.append(call)
         try:
             call.proposal = await super().plan(message, facts, note=note, widen=widen)
@@ -473,27 +504,50 @@ async def _draft_is_valid(
     return True
 
 
+def _widened(planner: _RecordingPlanner) -> bool:
+    return any(call.widened for call in planner.calls)
+
+
 async def run_case(
-    client: JsonCompletionClient, email: EmailService, case: SmokeCase, *, first: bool = False
+    client: JsonCompletionClient,
+    email: EmailService,
+    case: SmokeCase,
+    *,
+    first: bool = False,
+    use_areas: bool = False,
+    widen_enabled: bool = True,
 ) -> Outcome:
     """Plan one case through the turn's correction loop and check what the user would get.
 
-    ``first``: the run's first call, where a provider failure stops the run (exit 2)."""
-    facts = build_facts(case)
+    ``first``: the run's first call, where a provider failure stops the run (exit 2).
+    ``use_areas``: scope the prompt with the selector. ``widen_enabled=False``: never take the
+    full-prompt second call, so a selector miss shows as a failure."""
+    facts = build_facts(case, use_areas=use_areas)
     planner = _RecordingPlanner(client)
     try:
         returned, _ = await _corrected_plan(
-            planner, case.message, facts, _resolver(planner, case.message, facts)
+            planner,
+            case.message,
+            facts,
+            _resolver(planner, case.message, facts),
+            widen_enabled=widen_enabled,
         )
     except PlannerUnavailable:
         if first and len(planner.calls) == 1:
             raise ModelUnavailable() from None
-        return Outcome("unavailable", ["model"], len(planner.calls) > 1)
+        return Outcome("unavailable", ["model"], len(planner.calls) > 1, widened=_widened(planner))
     except PlannerInvalidOutput:  # a refusal with no correction note: a 502 on the turn path
-        return Outcome("invalid_output", ["contract"], len(planner.calls) > 1)
+        return Outcome(
+            "invalid_output", ["contract"], len(planner.calls) > 1, widened=_widened(planner)
+        )
     last = planner.calls[-1]
     proposal = last.proposal
-    outcome = Outcome(proposal.action if proposal else "invalid_output", [], len(planner.calls) > 1)
+    outcome = Outcome(
+        proposal.action if proposal else "invalid_output",
+        [],
+        len(planner.calls) > 1,
+        widened=_widened(planner),
+    )
     failed = outcome.failed
     if last.refusal is not None:  # refused twice: the user got the M7 fallback
         failed.append(REASON_FIELDS.get(last.refusal, "contract"))
@@ -564,7 +618,13 @@ async def run_case(
 
 
 async def run(
-    client: JsonCompletionClient, cases: Sequence[SmokeCase], repeat: int, out: Callable[[str], Any]
+    client: JsonCompletionClient,
+    cases: Sequence[SmokeCase],
+    repeat: int,
+    out: Callable[[str], Any],
+    *,
+    use_areas: bool = False,
+    widen_enabled: bool = True,
 ) -> int:
     """Every case ``repeat`` times; prints content-free lines and returns the exit code."""
     # Built without a pool: only the pure drafting call is used, never a database method.
@@ -580,7 +640,14 @@ async def run(
         wins = 0
         for _ in range(repeat):
             try:
-                outcome = await run_case(client, email, case, first=first)
+                outcome = await run_case(
+                    client,
+                    email,
+                    case,
+                    first=first,
+                    use_areas=use_areas,
+                    widen_enabled=widen_enabled,
+                )
             except ModelUnavailable:
                 return _setup_error("model unavailable on the first call; nothing was checked")
             first = False
@@ -610,9 +677,24 @@ def _setup_error(text: str) -> int:
     return 2
 
 
-async def _run_with_groq(key: str, model: str, cases: Sequence[SmokeCase], repeat: int) -> int:
+async def _run_with_groq(
+    key: str,
+    model: str,
+    cases: Sequence[SmokeCase],
+    repeat: int,
+    *,
+    use_areas: bool = False,
+    widen_enabled: bool = True,
+) -> int:
     async with httpx.AsyncClient(trust_env=False) as http:
-        return await run(GroqClient(key, model, http, meter=NullMeter()), cases, repeat, print)
+        return await run(
+            GroqClient(key, model, http, meter=NullMeter()),
+            cases,
+            repeat,
+            print,
+            use_areas=use_areas,
+            widen_enabled=widen_enabled,
+        )
 
 
 def main(argv: Sequence[str] | None = None, *, client: JsonCompletionClient | None = None) -> int:
@@ -620,6 +702,16 @@ def main(argv: Sequence[str] | None = None, *, client: JsonCompletionClient | No
     parser = argparse.ArgumentParser(prog="python -m scripts.assistant_smoke")
     parser.add_argument("--repeat", type=int, default=1, help="samples per case (pass rate)")
     parser.add_argument("--case", action="append", default=[], help="run only this case id")
+    parser.add_argument(
+        "--areas",
+        action="store_true",
+        help="scope the prompt with the area selector (default: the full prompt, the baseline)",
+    )
+    parser.add_argument(
+        "--no-widen",
+        action="store_true",
+        help="never take the full-prompt second call, so a selector miss is not hidden",
+    )
     args = parser.parse_args(argv)
     if args.repeat < 1:
         return _setup_error("--repeat must be at least 1")
@@ -634,13 +726,26 @@ def main(argv: Sequence[str] | None = None, *, client: JsonCompletionClient | No
             return _setup_error(f"unknown case id {', '.join(unknown)}")
         cases = [case for case in cases if case.id in args.case]
     if client is not None:
-        return asyncio.run(run(client, cases, args.repeat, print))
+        return asyncio.run(
+            run(
+                client,
+                cases,
+                args.repeat,
+                print,
+                use_areas=args.areas,
+                widen_enabled=not args.no_widen,
+            )
+        )
     found = _model_key()
     if found is None:
         return _setup_error("no model key configured (GROQ_API_KEY)")
     # The client's call log (model, schema, latency) goes to stderr, apart from the results.
     structlog.configure(logger_factory=structlog.PrintLoggerFactory(sys.stderr))
-    return asyncio.run(_run_with_groq(*found, cases, args.repeat))
+    return asyncio.run(
+        _run_with_groq(
+            *found, cases, args.repeat, use_areas=args.areas, widen_enabled=not args.no_widen
+        )
+    )
 
 
 if __name__ == "__main__":
