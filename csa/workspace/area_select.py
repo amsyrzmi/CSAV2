@@ -48,6 +48,11 @@ _RECORD_AREAS: dict[str, frozenset[Area]] = {
 _COLLEAGUE_PICK = re.compile(r"^Use employee \S+ for: ")
 
 
+# "who is X" is a name lookup (email's directory_lookup) and a people question (hr's people_query
+# and hr_process_read: "who is joining next month"), so it selects both.
+_WHO = r"who is|who's|who was|siapa|siapakah"
+
+
 def _words(pattern: str) -> re.Pattern[str]:
     return re.compile(rf"\b(?:{pattern})\b", re.IGNORECASE)
 
@@ -59,7 +64,7 @@ _AREA_WORDS: dict[Area, re.Pattern[str]] = {
     # directory_lookup and inbox_summary are email-only actions: a name lookup selects email so
     # that an hr or bookings turn naming a person can still use directory_lookup.
     "email": _words(
-        r"who is|who's|who was|siapa|siapakah|find|look ?up|search|cari(?:kan)?|directory"
+        rf"{_WHO}|find|look ?up|search|cari(?:kan)?|directory"
         r"|direktori|draft|drafts|drafted|compose|send|sending|sent|cc|bcc|recipients?|memo"
         r"|subscribers?|newsletter|remind|hantar|draf|penerima|ingatkan|langganan|pelanggan"
     ),
@@ -71,7 +76,7 @@ _AREA_WORDS: dict[Area, re.Pattern[str]] = {
         r"videos?|transcripts?|library|first aid|mohon|belajar|lessons?|pustaka|perpustakaan"
     ),
     "hr": _words(
-        r"onboarding|offboarding|tasks?|tugasan|process(?:es)?|proses|overdue|tertunggak|lewat"
+        rf"{_WHO}|onboarding|offboarding|tasks?|tugasan|process(?:es)?|proses|overdue|tertunggak|lewat"
         r"|profiles?|profil|leave|leaves|leaving|cuti|berhenti|resign\w*|hire[sd]?|hiring"
         r"|staff|people|kakitangan|pekerja|job titles?|jawatan|start date|tarikh mula|department"
         r"|departments|jabatan|reports? to|melapor kepada|last day|hari terakhir"
@@ -86,6 +91,7 @@ _AREA_WORDS: dict[Area, re.Pattern[str]] = {
     "products": _words(
         r"stock|stocks|inventory|stok|inventori|tik ?tok|orders?|refunds?|sku|skus|products?"
         r"|produk|pesanan|shipping|shipment|ship|listings?|variants?|price|harga"
+        r"|available|availability|have (?:any|the)|in stock|sold out|restock\w*|habis|ada stok"
     ),
 }
 

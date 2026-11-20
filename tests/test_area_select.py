@@ -165,8 +165,8 @@ ROWS: list[
     ("tiktok-stock", "change the stock on TikTok", None, None, None, NONE, _set("products", "hr")),
     ("tiktok-pesanan", "mana pesanan TikTok saya", None, None, None, NONE, _set("products")),
     # A name lookup is email's directory_lookup, even on another area's turn.
-    ("lookup-who-is", "who is Danial", None, None, None, NONE, _set("email")),
-    ("lookup-siapa", "siapa Danial", None, None, None, NONE, _set("email")),
+    ("lookup-who-is", "who is Danial", None, None, None, NONE, _set("email", "hr")),
+    ("lookup-siapa", "siapa Danial", None, None, None, NONE, _set("email", "hr")),
     ("lookup-find", "find Danial", None, None, None, NONE, _set("email")),
     ("lookup-look-up", "look up Danial please", None, None, None, NONE, _set("email")),
     ("lookup-on-hr-tab", "who is Danial", "hr", None, None, NONE, _set("hr", "email")),
@@ -178,6 +178,44 @@ ROWS: list[
         None,
         NONE,
         _set("bookings", "email"),
+    ),
+    # I1: plain stock questions in "available" words select products as well as bookings.
+    (
+        "avail-kettle",
+        "is the blue kettle available",
+        None,
+        None,
+        None,
+        NONE,
+        _set("products", "bookings"),
+    ),
+    ("avail-item", "is the item available", None, None, None, NONE, _set("products", "bookings")),
+    ("avail-have-any", "do we have any mugs left", None, None, None, NONE, _set("products")),
+    ("avail-sold-out", "is it sold out", None, None, None, NONE, _set("products")),
+    ("avail-restock", "when will you restock", None, None, None, NONE, _set("products")),
+    ("avail-habis", "mug biru dah habis ke", None, None, None, NONE, _set("products")),
+    ("avail-ada-stok", "ada stok lagi", None, None, None, NONE, _set("products")),
+    (
+        "avail-slots-still-bookings",
+        "what slots are available",
+        None,
+        None,
+        None,
+        NONE,
+        _set("bookings"),
+    ),
+    # I2: who-is questions are also people questions (people_query, hr_process_read).
+    ("who-joining", "who is joining next month", None, None, None, NONE, _set("email", "hr")),
+    ("who-off", "who is off tomorrow", None, None, None, NONE, _set("email", "hr")),
+    ("who-new", "who's new this week", None, None, None, NONE, _set("email", "hr")),
+    (
+        "siapa-masuk",
+        "siapa yang akan masuk bulan depan",
+        None,
+        None,
+        None,
+        NONE,
+        _set("email", "hr"),
     ),
     # Needs.
     ("needs-mail", "hello", None, None, None, _needs(mail=True), _set("email")),
@@ -309,6 +347,8 @@ EXACT = {
     "colleague-pick-bare",
     "lookup-who-is",
     "lookup-siapa",
+    "who-joining",
+    "siapa-masuk",
 }
 
 
