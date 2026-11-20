@@ -904,6 +904,22 @@ def test_a_case_with_a_record_and_summary_reaches_the_planner_facts() -> None:
         _case(facts={"preset": "staff_basic", "record_summary": "x" * 501})
 
 
+def test_the_product_cases_run_with_the_business_service_active() -> None:
+    """An open product record is described only when the Business gate is open: the facts of a
+    product case must say it is, or the model may rightly answer "not active"."""
+    from csa.workspace.rules import TAB_GATES, unlocked
+
+    cases = {case.id: case for case in smoke.load_cases()}
+    ids = ("product_stock-en-1", "product_stock-ms-1", "scoped_answer-en-6")
+    for case_id in ids:
+        assert cases[case_id].facts.preset == "staff_business", case_id
+        packages = smoke.build_facts(cases[case_id]).packages
+        assert unlocked(packages, TAB_GATES["business"]), case_id
+    # The other presets keep Business closed, as a company without it would.
+    bare = smoke.build_facts(cases["navigate-en-1"]).packages
+    assert not unlocked(bare, TAB_GATES["business"])
+
+
 def test_areas_flag_scopes_the_facts_and_a_default_run_leaves_them_unset() -> None:
     case = next(case for case in smoke.load_cases() if case.id == "compose-en-1")
     assert smoke.build_facts(case).areas is None

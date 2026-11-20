@@ -585,8 +585,8 @@ data is synthetic. A PASS checks only the action and the fields named, as above.
 | Who is in the Sales department? | The Email tab is open | A People list for Sales (an HR question asked on the Email tab) | `tab_context-en-1` |
 | Siapa dalam jabatan Sales? | The Email tab is open | The same, in Malay | `tab_context-ms-1` |
 | Send an email to aina.rahman@example.com saying the report is ready | The HR tab is open | A Send card to exactly that address (an email asked on the HR tab) | `tab_context-en-2` |
-| How many of these do we have left? | A TikTok Shop product open on the Business tab | A live stock read of that product, never an answer from memory | `product_stock-en-1` |
-| Berapa banyak lagi stok yang kita ada untuk produk ini? | The same | The same, in Malay | `product_stock-ms-1` |
+| How many of these do we have left? | Business active, a TikTok Shop product open on the Business tab | A live stock read of that product, never an answer from memory | `product_stock-en-1` |
+| Berapa banyak lagi stok yang kita ada untuk produk ini? | The same (Business active) | The same, in Malay | `product_stock-ms-1` |
 | What does this video say about exits? | A ready video open in the Training library | A question about that video (training_ask), never a training request | `training_ask-en-2` |
 | Apa yang video ini cakap tentang pintu keluar? | The same | The same, in Malay | `training_ask-ms-2` |
 | What is the capital of France? | none | An answer or a question: nothing in the message belongs to an area, so the full prompt runs | `no_area-en-1` |
@@ -597,7 +597,7 @@ data is synthetic. A PASS checks only the action and the fields named, as above.
 | Mark Razak as leaving, last day 20 December 2026, he resigned | Staff without HR people access | An answer that People access does not allow it, no card | `scoped_answer-en-4` |
 | Tandakan Razak akan berhenti, hari terakhir 20 Disember 2026, dia letak jawatan | The same | The same, in Malay | `scoped_answer-ms-1` |
 | Is Room A free tomorrow? | The Bookings service not active | An answer that Bookings is not active, no booking card | `scoped_answer-en-5` |
-| Please cancel order 1042 on TikTok Shop and refund the customer | Any | An answer that it is done in TikTok Shop Seller Center, no stock read | `scoped_answer-en-6` |
+| Please cancel order 1042 on TikTok Shop and refund the customer | Business active | An answer that it is done in TikTok Shop Seller Center, no stock read | `scoped_answer-en-6` |
 
 ## Customer persona and planner fixes (2026-11-09)
 

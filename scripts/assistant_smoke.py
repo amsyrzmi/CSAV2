@@ -145,6 +145,7 @@ Preset = Literal[
     "staff_bookings_view",
     "staff_subscriptions",
     "staff_training",
+    "staff_business",
 ]
 
 
@@ -302,6 +303,16 @@ PRESETS: dict[str, _Preset] = {
         _LINKED,
         "directory",
         extra_packages=("training_library",),
+    ),
+    # Marketplaces is active: the Business tab and an open TikTok Shop product record are open.
+    "staff_business": _Preset(
+        "active",
+        _MANAGER,
+        None,
+        _NOT_APPROVER,
+        _LINKED,
+        "directory",
+        extra_packages=("marketplaces",),
     ),
     "staff_hr_inactive": _Preset(
         "suspended",

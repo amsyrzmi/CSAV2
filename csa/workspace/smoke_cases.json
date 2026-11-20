@@ -2043,7 +2043,7 @@
     "language": "en",
     "message": "How many of these do we have left?",
     "facts": {
-      "preset": "staff_basic",
+      "preset": "staff_business",
       "page_tab": "business",
       "record": {
         "kind": "product",
@@ -2069,7 +2069,7 @@
     "language": "ms",
     "message": "Berapa banyak lagi stok yang kita ada untuk produk ini?",
     "facts": {
-      "preset": "staff_basic",
+      "preset": "staff_business",
       "page_tab": "business",
       "record": {
         "kind": "product",
@@ -2299,7 +2299,7 @@
     "language": "en",
     "message": "Please cancel order 1042 on TikTok Shop and refund the customer",
     "facts": {
-      "preset": "staff_basic"
+      "preset": "staff_business"
     },
     "expect": {
       "actions": [
