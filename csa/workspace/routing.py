@@ -82,28 +82,53 @@ class RoutedNeeds:
     areas: frozenset[Area]
 
 
-def routing_questions() -> dict[str, dict[str, Any]]:
-    """The five fact questions then the six area questions: one request, eleven answers."""
-    facts: dict[str, dict[str, Any]] = {
+def fact_questions() -> dict[str, dict[str, Any]]:
+    """The five fact questions (manager, mail, team, training, people)."""
+    return {
         f"needs:{group}": {
             "type": "noul",
             "instructions": f"Does `message` need {_DESCRIPTIONS[group]}?",
         }
         for group in FACT_GROUPS
     }
-    return facts | AREA_QUESTIONS
+
+
+def routing_questions() -> dict[str, dict[str, Any]]:
+    """The five fact questions then the six area questions: one request, eleven answers.
+
+    The Jev evaluation (``scripts/assistant_jev_eval.py``) always asks all eleven.
+    """
+    return fact_questions() | AREA_QUESTIONS
+
+
+def should_ask_areas(decider: Decider | None, *, area_prompts: bool) -> bool:
+    """Whether the routing request also asks the six area questions.
+
+    Only when they can be used: the scoped prompt is on (``area_prompts``), or the decider runs
+    in ``shadow`` (production keeps its real-traffic area log there). Otherwise the request holds
+    the five fact questions it held before phase B, until the owner's evaluation passes.
+    """
+    return area_prompts or (decider is not None and decider.mode == "shadow")
 
 
 def _from_answers(
-    answers: Mapping[str, Any], fallback: Needs, area_fallback: frozenset[Area]
+    answers: Mapping[str, Any],
+    fallback: Needs,
+    area_fallback: frozenset[Area],
+    *,
+    ask_areas: bool,
 ) -> RoutedNeeds:
-    """Decided answer OR word rule, per question: Jev can add a read or an area, never drop one."""
+    """Decided answer OR word rule, per question: Jev can add a read or an area, never drop one.
+
+    Without the area questions the areas are the word rules' alone."""
     needs = Needs(
         **{
             group: bool(answers[f"needs:{group}"]) or getattr(fallback, group)
             for group in FACT_GROUPS
         }
     )
+    if not ask_areas:
+        return RoutedNeeds(needs=needs, areas=area_fallback)
     areas: frozenset[Area] = frozenset(
         area for area in AREA_NAMES if bool(answers[f"needs:area:{area}"]) or area in area_fallback
     )
@@ -115,14 +140,17 @@ async def route_facts(
     body: str,
     *,
     fallback: Needs,
-    area_fallback: frozenset[Area] = frozenset(),
+    area_fallback: frozenset[Area],
+    ask_areas: bool,
     trace_id: UUID,
     client_id: UUID,
 ) -> RoutedNeeds:
     """The reads and areas this message needs: each decided OR in the word rules' answer.
 
     ``fallback`` is the word-rule ``Needs`` and ``area_fallback`` the word-rule areas (no
-    decider: exactly those). The area answers only widen the planner prompt's selection.
+    decider: exactly those). The area answers only widen the planner prompt's selection. With
+    ``ask_areas`` false (see ``should_ask_areas``) the request holds only the five fact
+    questions and the areas are the word rules'.
 
     A Jev error or timeout never reaches here (the decider falls back). The fallback is always
     complete, so ``FallbackAnswerError`` only means a bug and propagates as a server error.
@@ -134,14 +162,15 @@ async def route_facts(
         answers: dict[str, object] = {
             f"needs:{group}": getattr(fallback, group) for group in FACT_GROUPS
         }
-        answers |= {f"needs:area:{area}": area in area_fallback for area in AREA_NAMES}
+        if ask_areas:
+            answers |= {f"needs:area:{area}": area in area_fallback for area in AREA_NAMES}
         return answers
 
     decided = await decider.decide(
         {"message": body},
-        routing_questions(),
+        routing_questions() if ask_areas else fact_questions(),
         fallback=word_rules,
         trace_id=trace_id,
         client_id=client_id,
     )
-    return _from_answers(decided.answers, fallback, area_fallback)
+    return _from_answers(decided.answers, fallback, area_fallback, ask_areas=ask_areas)

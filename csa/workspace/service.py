@@ -126,7 +126,7 @@ from csa.workspace.planner import (
 )
 from csa.workspace.prompt_areas import allowed_actions
 from csa.workspace.registry import PreparedProposal, ProposalRegistry
-from csa.workspace.routing import Needs, route_facts
+from csa.workspace.routing import Needs, route_facts, should_ask_areas
 from csa.workspace.rules import ADDRESS as _ADDRESS
 from csa.workspace.rules import (
     BLANK_QUERY,
@@ -1287,11 +1287,14 @@ async def planner_facts(
     history = _prior_turns(rows, turn.body)
     previous = _split_stored(rows[0]["result"])[1] if rows else None
     offered = history[-1].offered_options if history else []
+    decider = getattr(request.app.state, "routing_decider", None)
+    area_prompts = getattr(request.app.state, "workspace_area_prompts", False) is True
     routed = await route_facts(
-        getattr(request.app.state, "routing_decider", None),
+        decider,
         turn.body,
         fallback=word_rule_needs(turn.body),
         area_fallback=word_rule_areas(turn.body),
+        ask_areas=should_ask_areas(decider, area_prompts=area_prompts),
         trace_id=turn.request_key,
         client_id=client_id,
     )
@@ -1317,7 +1320,7 @@ async def planner_facts(
     # The scoped prompt is behind WORKSPACE_AREA_PROMPTS (app.state, off by default): off, no
     # selection runs and the turn keeps the full prompt.
     areas = None
-    if getattr(request.app.state, "workspace_area_prompts", False) is True:
+    if area_prompts:
         areas = select_areas(
             turn.body,
             tab=context.tab if context is not None else None,
