@@ -353,6 +353,30 @@ experiments of 5 to 10 samples. No sixth full run.
 4. The products plus inbox companion and the weak-word rules (approve, who is) were tuned on
    5-to-10-sample evidence; treat them as measured perturbation fixes, not proven ones.
 
+### Phase B PR notes (branch `feat/area-prompts-decider`, built after phase A)
+
+Points for the phase B pull request text:
+
+- What it does: the routing request can also carry the six area questions; the area answers are
+  unioned into the selector's set (Jev adds an area, never removes one). The request asks them
+  only when they can be used: `WORKSPACE_AREA_PROMPTS` is on, or the routing decider's mode is
+  `shadow` (production keeps its real-traffic area log). With the switch off and any other mode the
+  request holds the five fact questions it held before, and the areas are the word rules' alone
+  (`should_ask_areas` in `csa/workspace/routing.py`, derived from existing state; no new setting).
+  `scripts/assistant_jev_eval.py` always asks all eleven.
+- Routing rows in `decision_log` show more `llm` / `low_confidence` fallbacks once eleven answers are
+  asked: any one answer below its floor flags the row (the cascade floor is per question, so a weak
+  area answer does not change a fact answer; only a timeout, a missing or a malformed answer sends
+  the whole request to the word rules).
+- A Jev "yes" for inbox joins the set after the weak approve/reject suppression, so a turn the
+  suppression kept as `{hr}` can become `{hr, inbox}`; that combination scored 0/5 in the
+  forced-area experiment, and the scoped plus cascade path is not measured by the planner gate.
+- Before routing goes to `cascade` for areas, the owner runs `scripts/assistant_jev_eval.py` with
+  their own key, compares the five fact questions against the last five-question run, and reads
+  `false_yes` per area question.
+- After merge, watch the `jev_call` log line (`questions=`, `latency_ms`): the request now holds
+  eleven questions where it held five, which can change its latency.
+
 ### Owner decisions still open
 
 - Whether a switch-on PR for staging (`WORKSPACE_AREA_PROMPTS`, with a widen log) follows now. The

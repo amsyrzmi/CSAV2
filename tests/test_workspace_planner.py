@@ -3239,11 +3239,11 @@ def test_planner_booking_rule_keeps_the_can_change_gate() -> None:
     ) in SYSTEM_PROMPT
 
 
-def _routing_decider(w: SessionWorld, jev: FakeJev) -> Decider:
+def _routing_decider(w: SessionWorld, jev: FakeJev, mode: str = "cascade") -> Decider:
     """The real decider on the real pool; only Jev is a fake. The app reads it from app.state."""
     decider = Decider(
         "routing",
-        "cascade",
+        mode,
         jev,  # type: ignore[arg-type]
         w.app.state.pool,
         floors={"noul": 0.7, "choice": 0.7},
@@ -3729,3 +3729,69 @@ async def test_switch_on_scopes_the_prompt_to_the_selected_areas(planned) -> Non
     assert turn.status_code == 201, turn.text
     assert [system for _, system, _ in model.calls] == [scoped_prompt(frozenset({"hr"}))]
     assert '"areas"' not in model.calls[0][2]
+
+
+@requires_docker
+async def test_switch_on_merges_the_deciders_areas_with_the_selectors(planned) -> None:
+    from csa.workspace.planner import scoped_prompt
+
+    w, model = planned
+    w.app.state.workspace_area_prompts = True
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+    jev = FakeJev(_jev(areas={"hr": 0.93}))
+    _routing_decider(w, jev)
+    body = "who looks after the paperwork when somebody joins?"  # no word rule matches this
+    model.reply({"action": "answer", "markdown": "ok"})
+    turn = await _turn(w, browser, thread, body, "bookings")  # the tab selects bookings
+    assert turn.status_code == 201, turn.text
+    assert len(jev.calls) == 1 and len(jev.calls[0]["questions"]) == 11  # still one request
+    assert [system for _, system, _ in model.calls] == [
+        scoped_prompt(frozenset({"bookings", "hr"}))
+    ]
+
+    # No selector signal at all, and Jev adds one area: the prompt is scoped to that area alone.
+    model.calls.clear()
+    jev.response = _jev(areas={"hr": 0.93})
+    model.reply({"action": "answer", "markdown": "ok"})
+    turn = await _turn(w, browser, thread, body, "overview")
+    assert turn.status_code == 201, turn.text
+    assert [system for _, system, _ in model.calls] == [scoped_prompt(frozenset({"hr"}))]
+
+
+@requires_docker
+@pytest.mark.parametrize(
+    ("switch", "mode", "questions"),
+    [
+        (False, "cascade", 5),  # nothing uses the area answers: the request is as before phase B
+        (False, "shadow", 11),  # production keeps its real-traffic area log
+        (True, "cascade", 11),
+        (True, "shadow", 11),
+    ],
+)
+async def test_the_routing_request_asks_the_area_questions_only_when_they_are_used(
+    planned, switch: bool, mode: str, questions: int
+) -> None:
+    w, model = planned
+    w.app.state.workspace_area_prompts = switch
+    browser = await _mail_ready(w, "hr")
+    thread = await _thread(w, browser)
+    jev = FakeJev(_jev())
+    _routing_decider(w, jev, mode)
+    model.reply({"action": "answer", "markdown": "Ok."})
+    turn = await _turn(w, browser, thread, "hello", "overview")
+    assert turn.status_code == 201, turn.text
+    assert len(jev.calls) == 1 and len(jev.calls[0]["questions"]) == questions
+
+
+@requires_docker
+async def test_switch_on_a_decider_with_no_yes_keeps_the_full_prompt(planned) -> None:
+    w, model = planned
+    w.app.state.workspace_area_prompts = True
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+    _routing_decider(w, FakeJev(_jev()))  # a confident no on all eleven
+    model.reply({"action": "answer", "markdown": "ok"})
+    turn = await _turn(w, browser, thread, "hello", "overview")
+    assert turn.status_code == 201, turn.text
+    assert [system for _, system, _ in model.calls] == [SYSTEM_PROMPT]

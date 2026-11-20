@@ -57,7 +57,7 @@ from csa.metering.context import MeterContext, meter_context
 from csa.training import ask as training_ask
 from csa.training.access import can_manage
 from csa.workspace import email_batch, hr_people, hr_processes, hr_task_card, stock
-from csa.workspace.area_select import select_areas
+from csa.workspace.area_select import select_areas, word_rule_areas
 from csa.workspace.contracts import (
     MAX_STEPS,
     MAX_WORK_TTL,
@@ -126,7 +126,7 @@ from csa.workspace.planner import (
 )
 from csa.workspace.prompt_areas import allowed_actions
 from csa.workspace.registry import PreparedProposal, ProposalRegistry
-from csa.workspace.routing import Needs, route_facts
+from csa.workspace.routing import Needs, route_facts, should_ask_areas
 from csa.workspace.rules import ADDRESS as _ADDRESS
 from csa.workspace.rules import (
     BLANK_QUERY,
@@ -1287,13 +1287,18 @@ async def planner_facts(
     history = _prior_turns(rows, turn.body)
     previous = _split_stored(rows[0]["result"])[1] if rows else None
     offered = history[-1].offered_options if history else []
-    needs = await route_facts(
-        getattr(request.app.state, "routing_decider", None),
+    decider = getattr(request.app.state, "routing_decider", None)
+    area_prompts = getattr(request.app.state, "workspace_area_prompts", False) is True
+    routed = await route_facts(
+        decider,
         turn.body,
         fallback=word_rule_needs(turn.body),
+        area_fallback=word_rule_areas(turn.body),
+        ask_areas=should_ask_areas(decider, area_prompts=area_prompts),
         trace_id=turn.request_key,
         client_id=client_id,
     )
+    needs = routed.needs
     manager = None
     if needs.manager:
         manager = await _my_manager(request, actor, client_id, packages)
@@ -1315,13 +1320,14 @@ async def planner_facts(
     # The scoped prompt is behind WORKSPACE_AREA_PROMPTS (app.state, off by default): off, no
     # selection runs and the turn keeps the full prompt.
     areas = None
-    if getattr(request.app.state, "workspace_area_prompts", False) is True:
+    if area_prompts:
         areas = select_areas(
             turn.body,
             tab=context.tab if context is not None else None,
             record_kind=context.record.kind if context and context.record else None,
             previous=history[-1] if history else None,
             needs=needs,
+            routed=routed.areas,
         )
     return PlannerFacts(
         role=actor.role,

@@ -544,3 +544,19 @@ def test_an_empty_or_abandoned_prompt_exits_2(
     assert ev.main([]) == 2
     assert keys == []
     assert "no key" in capsys.readouterr().err
+
+
+def test_the_routing_evaluation_always_asks_all_eleven_questions() -> None:
+    """The evaluation builds its request from ``routing_questions()`` (five fact questions and
+    six area ones), whatever the live service asks (``route_facts(ask_areas=...)``): the owner's
+    run must read false_yes per area question before routing goes to cascade for areas."""
+    questions = ev.area_questions("routing")
+    assert len(questions) == 11
+    assert [name for name in questions if name.startswith("needs:area:")] == [
+        f"needs:area:{area}"
+        for area in ("email", "inbox", "training", "hr", "bookings", "products")
+    ]
+    assert {case.area for case in CASES if case.area == "routing"} == {"routing"}
+    for case in CASES:
+        if case.area == "routing":
+            assert set(case.expect) == set(questions), case.id

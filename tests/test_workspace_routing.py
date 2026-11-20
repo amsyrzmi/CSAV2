@@ -13,19 +13,37 @@ import pytest
 from csa.decide import deciders
 from csa.decide.deciders import Decider
 from csa.decide.jev import JevError, JevResponse
-from csa.workspace.routing import FACT_GROUPS, Needs, route_facts
+from csa.workspace.area_select import word_rule_areas
+from csa.workspace.prompt_areas import Area
+from csa.workspace.routing import (
+    AREA_QUESTIONS,
+    FACT_GROUPS,
+    Needs,
+    RoutedNeeds,
+    fact_questions,
+    route_facts,
+    routing_questions,
+    should_ask_areas,
+)
 from csa.workspace.service import word_rule_needs
+from scripts import assistant_jev_eval as jev_eval
 
 FLOORS = {"noul": 0.7, "choice": 0.7}
 NOTHING = Needs(manager=False, mail=False, team=False, training=False, people=False)
 
 
-def _jev(**p: float) -> JevResponse:
-    """Jev's answer per group (probability of yes); a group not named is a confident no."""
-    return JevResponse(
-        model="jev-test",
-        answers={f"needs:{g}": {"noul": p.get(g, 0.02)} for g in FACT_GROUPS},
-    )
+AREAS: tuple[Area, ...] = ("email", "inbox", "training", "hr", "bookings", "products")
+
+
+def _jev(areas: dict[str, float] | None = None, **p: float) -> JevResponse:
+    """Jev's answer per group and per area (probability of yes); one not named is a confident no.
+
+    ``p`` names the five fact groups; ``areas`` maps an area to its probability.
+    """
+    chosen = areas or {}
+    answers = {f"needs:{g}": {"noul": p.get(g, 0.02)} for g in FACT_GROUPS}
+    answers |= {f"needs:area:{a}": {"noul": chosen.get(a, 0.02)} for a in AREAS}
+    return JevResponse(model="jev-test", answers=answers)
 
 
 class FakeJev:
@@ -80,14 +98,20 @@ def _decider(client: FakeJev, mode: str = "cascade") -> Decider:
     )
 
 
-async def _route(decider: Decider | None, body: str) -> Needs:
+async def _route_all(decider: Decider | None, body: str, *, ask_areas: bool = True) -> RoutedNeeds:
     return await route_facts(
         decider,
         body,
         fallback=word_rule_needs(body),
+        area_fallback=word_rule_areas(body),
+        ask_areas=ask_areas,
         trace_id=uuid4(),
         client_id=uuid4(),
     )
+
+
+async def _route(decider: Decider | None, body: str) -> Needs:
+    return (await _route_all(decider, body)).needs
 
 
 async def test_jev_yes_for_people_reads_people_access_without_a_trigger_word() -> None:
@@ -159,8 +183,17 @@ async def test_jev_error_uses_the_word_rules(
 async def test_no_decider_is_exactly_todays_behaviour() -> None:
     body = "reply to my manager about the training course"
     fallback = word_rule_needs(body)
-    got = await route_facts(None, body, fallback=fallback, trace_id=uuid4(), client_id=uuid4())
-    assert got is fallback
+    got = await route_facts(
+        None,
+        body,
+        fallback=fallback,
+        area_fallback=word_rule_areas(body),
+        ask_areas=True,
+        trace_id=uuid4(),
+        client_id=uuid4(),
+    )
+    assert got.needs is fallback
+    assert got.areas == word_rule_areas(body)
     assert fallback == Needs(manager=True, mail=True, team=False, training=True, people=True)
 
 
@@ -174,9 +207,12 @@ def test_word_rules_are_the_five_regexes() -> None:
 async def test_routing_questions_are_noul_per_group() -> None:
     jev = FakeJev()
     await _route(_decider(jev), "show me the inbox, mail me at ali@example.com")
-    assert len(jev.calls) == 1  # one request for all five
+    assert len(jev.calls) == 1  # one request for the five fact questions and the six area ones
     questions = jev.calls[0]["questions"]
-    assert list(questions) == [f"needs:{g}" for g in FACT_GROUPS]
+    assert len(questions) == 11
+    assert list(questions) == [f"needs:{g}" for g in FACT_GROUPS] + [
+        f"needs:area:{a}" for a in AREAS
+    ]
     assert all(q["type"] == "noul" and "`message`" in q["instructions"] for q in questions.values())
     # The message travels redacted, in state["message"].
     sent = jev.calls[0]["state"]
@@ -190,3 +226,180 @@ async def test_the_decision_is_logged_without_the_message(
     await _route(_decider(FakeJev(_jev(mail=0.9))), "private words here")
     assert len(no_database) == 1
     assert "private words here" not in repr(no_database[0])
+
+
+# ------------------------------------------------------------------------- the area questions
+
+
+def test_one_area_question_per_area_in_english_like_the_fact_ones() -> None:
+    assert list(AREA_QUESTIONS) == [f"needs:area:{a}" for a in AREAS]
+    for question in AREA_QUESTIONS.values():
+        assert question["type"] == "noul"
+        assert question["instructions"].startswith("Does `message` need ")
+        assert question["instructions"].endswith("?")
+
+
+async def test_jev_yes_for_an_area_adds_it_where_the_word_rules_find_nothing() -> None:
+    body = "who handles the paperwork when somebody joins?"
+    assert word_rule_areas(body) == frozenset()
+    jev = FakeJev(_jev(areas={"hr": 0.93}))
+    routed = await _route_all(_decider(jev), body)
+    assert routed.areas == frozenset({"hr"})
+    assert routed.needs == word_rule_needs(body)  # the fact needs are judged on their own
+
+
+async def test_a_confident_jev_no_never_removes_a_word_rule_area() -> None:
+    body = "move my meeting to Friday and add Ali to Sales"
+    rule = word_rule_areas(body)
+    assert {"bookings", "hr"} <= rule
+    routed = await _route_all(_decider(FakeJev(_jev())), body)  # a confident no on all eleven
+    assert routed.areas == rule
+
+
+async def test_below_the_floor_an_area_answer_is_the_word_rules() -> None:
+    body = "cancel tomorrow's meeting"
+    rule = word_rule_areas(body)
+    assert "bookings" in rule and "products" not in rule
+    # 0.6 is under the 0.7 floor: the products yes is ignored, the bookings no does not matter.
+    routed = await _route_all(_decider(FakeJev(_jev(areas={"products": 0.6}))), body)
+    assert routed.areas == rule
+
+
+async def test_jev_only_adds_areas_on_every_area_question() -> None:
+    body = "show me today's orders"
+    rule = word_rule_areas(body)
+    assert rule == frozenset({"products"})
+    routed = await _route_all(_decider(FakeJev(_jev(areas={"bookings": 0.95}))), body)
+    assert routed.areas == frozenset({"products", "bookings"})
+
+
+@pytest.mark.parametrize("failure", ["error", "timeout"])
+async def test_jev_error_uses_the_word_rule_areas(
+    failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = "cancel tomorrow's meeting and check the stock"
+    if failure == "timeout":
+        monkeypatch.setattr(deciders, "CLASSIFY_TIMEOUT_S", 0.05)
+        jev = FakeJev(hang=True)
+    else:
+        jev = FakeJev(error=JevError("jev_http_503"))
+    routed = await _route_all(_decider(jev), body)
+    assert routed.areas == word_rule_areas(body) == frozenset({"bookings", "products"})
+    assert routed.needs == word_rule_needs(body)
+
+
+async def test_the_word_rules_decide_the_areas_in_shadow_and_log_both_answers(
+    no_database: list[tuple[Any, ...]],
+) -> None:
+    body = "who handles the paperwork when somebody joins?"
+    jev = FakeJev(_jev(areas={"hr": 0.93}))
+    routed = await _route_all(_decider(jev, mode="shadow"), body)
+    assert routed.areas == frozenset()  # shadow: Jev runs beside, the words decide
+    assert len(jev.calls) == 1 and len(jev.calls[0]["questions"]) == 11
+    (row,) = no_database
+    logged = repr(row)
+    assert "needs:area:hr" in logged and body not in logged
+
+
+async def test_no_jev_call_in_llm_mode_means_the_area_answers_are_the_word_rules() -> None:
+    routed = await _route_all(None, "book a room for Friday")
+    assert routed.areas == word_rule_areas("book a room for Friday")
+    assert "bookings" in routed.areas
+
+
+def test_the_labels_file_validates_with_the_area_questions() -> None:
+    cases = jev_eval.load_cases()  # the evaluation's own loader; no key, no network
+    routing = [case for case in cases if case.area == "routing"]
+    wanted = set(jev_eval.area_questions("routing"))
+    assert wanted >= {f"needs:area:{a}" for a in AREAS}
+    for case in routing:
+        assert set(case.expect) == wanted
+        assert {case.language} <= {"en", "ms"}
+    for area in AREAS:
+        yes = [c for c in routing if c.expect[f"needs:area:{area}"] is True]
+        assert {c.language for c in yes} == {"en", "ms"}, area
+        assert len(yes) >= jev_eval.MIN_CONFIDENT, area
+    ids = [case.id for case in routing]
+    assert len(ids) == len(set(ids))
+
+
+# ------------------------------------------------------- when the area questions are asked (I4)
+
+
+def test_the_fact_questions_are_five_and_the_routing_questions_are_eleven() -> None:
+    assert list(fact_questions()) == [f"needs:{g}" for g in FACT_GROUPS]
+    assert len(routing_questions()) == 11
+    assert list(routing_questions()) == list(fact_questions()) + list(AREA_QUESTIONS)
+
+
+async def test_without_the_area_questions_the_request_holds_exactly_the_five_fact_ones() -> None:
+    body = "who handles the paperwork when somebody joins?"
+    jev = FakeJev(_jev(areas={"hr": 0.99}, mail=0.9))
+    routed = await _route_all(_decider(jev), body, ask_areas=False)
+    assert len(jev.calls) == 1
+    assert list(jev.calls[0]["questions"]) == [f"needs:{g}" for g in FACT_GROUPS]
+    # The areas are the word rules only; the fact needs are still decided by Jev.
+    assert routed.areas == word_rule_areas(body) == frozenset()
+    assert routed.needs.mail is True
+
+
+async def test_with_the_area_questions_the_request_holds_all_eleven() -> None:
+    jev = FakeJev()
+    await _route_all(_decider(jev), "hello", ask_areas=True)
+    assert list(jev.calls[0]["questions"]) == list(routing_questions())
+
+
+async def test_shadow_without_the_area_questions_logs_five_answers(
+    no_database: list[tuple[Any, ...]],
+) -> None:
+    jev = FakeJev()
+    await _route_all(_decider(jev, mode="shadow"), "hello", ask_areas=False)
+    assert len(jev.calls[0]["questions"]) == 5
+    assert "needs:area:hr" not in repr(no_database[0])
+
+
+@pytest.mark.parametrize("ask_areas", [True, False])
+async def test_a_real_llm_mode_decider_makes_no_jev_call_and_the_areas_are_the_word_rules(
+    ask_areas: bool,
+) -> None:
+    body = "cancel tomorrow's meeting and check the stock"
+    jev = FakeJev(_jev(areas={"hr": 0.99}))
+    routed = await _route_all(_decider(jev, mode="llm"), body, ask_areas=ask_areas)
+    assert jev.calls == []
+    assert routed.areas == word_rule_areas(body) == frozenset({"bookings", "products"})
+    assert routed.needs == word_rule_needs(body)
+
+
+def _real_decider(mode: str, *, client: bool = True) -> Decider:
+    return Decider(
+        "routing",
+        mode,
+        FakeJev() if client else None,  # type: ignore[arg-type]
+        object(),
+        floors=FLOORS,
+        audit_sample=0.0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("decider", "switch", "expected"),
+    [
+        # Production keeps its real-traffic area log in shadow; staging stays on five questions
+        # until the evaluation passes; the switch asks for the areas in any mode.
+        (_real_decider("shadow"), False, True),
+        (_real_decider("cascade"), False, False),
+        (_real_decider("llm"), False, False),
+        (_real_decider("auto"), False, False),  # auto with a client resolves to cascade
+        (_real_decider("auto", client=False), False, False),  # and without one to llm
+        (None, False, False),
+        (_real_decider("shadow"), True, True),
+        (_real_decider("cascade"), True, True),
+        (_real_decider("llm"), True, True),
+        (_real_decider("auto"), True, True),
+        (None, True, True),
+    ],
+)
+def test_the_area_questions_are_asked_with_the_switch_on_or_in_shadow(
+    decider: Decider | None, switch: bool, expected: bool
+) -> None:
+    assert should_ask_areas(decider, area_prompts=switch) is expected

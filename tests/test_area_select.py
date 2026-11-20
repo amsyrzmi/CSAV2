@@ -488,6 +488,18 @@ def test_word_rules_reuse_the_service_words():
     assert "hr" in word_rule_areas("hire someone")  # people
 
 
+def test_routed_areas_join_the_union() -> None:
+    kw = {"tab": None, "record_kind": None, "previous": None, "needs": _needs()}
+    assert select_areas("hello", **kw) is None
+    assert select_areas("hello", routed=frozenset({"hr"}), **kw) == {"hr"}
+    assert select_areas("book a room", routed=frozenset({"hr"}), **kw) == {"bookings", "hr"}
+
+
+def test_a_routed_products_alone_gets_the_same_companion() -> None:
+    kw = {"tab": None, "record_kind": None, "previous": None, "needs": _needs()}
+    assert select_areas("hello", routed=frozenset({"products"}), **kw) == {"products", "inbox"}
+
+
 # Communication, stock and calendar phrasings found by the final review: the verbs of telling
 # someone something select email, a call or a schedule selects bookings, a stock-count question
 # selects products. Exact sets, with the fact-read needs the turn would derive from the words.
