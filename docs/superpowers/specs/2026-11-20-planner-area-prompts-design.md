@@ -219,22 +219,28 @@ Baseline cases below 5/5: `email_batch-en-1` 4, `email_batch_rest-en-1` 4, `emai
 ### Run 2 and its three violations
 
 `hr_process-ms-3` 4 to 2, `hr_process_neg-en-5` 5 to 0, `product_stock-en-1` 5 to 3. Rerun of the three
-alone at `--repeat 10` (`rerun_base.txt` against `rerun_cand.txt`, 30 samples each): `hr_process-ms-3`
+alone at `--repeat 10` (`rerun_base.txt` against `rerun_cand.txt`, 30 samples each; the rerun's commit,
+`463e4527`, is inferred from timing, since the pair ran after run 2 and before `36810e8e` at 13:50;
+`rerun_base.txt` is the full prompt, so the commit does not affect it): `hr_process-ms-3`
 10/10 against 5/10, `hr_process_neg-en-5` 10/10 against 0/10, `product_stock-en-1` 10/10 against 8/10
 (30/30 against 13/30). All three are real, not noise.
 
 ### Diagnosis and tuning
 
 Forced-area experiments on the real model (a scratch copy of the code that forced the selected areas;
-never committed; 5 to 10 samples each) found the cause of each:
+never committed; 5 to 10 samples each) show which area sets pass and which fail. What the failing sets
+had in common, with the likely reason (a hypothesis consistent with the outputs, not a proven cause):
 
 - `hr_process_neg-en-5`, "Please approve Aina's laptop task": `{hr}` 5/5, `{hr, inbox}` 0/5,
   `{hr, inbox, email}` 0/5, `{hr, inbox, training, bookings}` 1/5, all six areas through the scoped path
-  5/5. The bare word `approve` pulled inbox in and the model returned `hr_task_complete`.
+  5/5. The bare word `approve` pulled inbox into the selection, and the failing outputs
+  were `hr_task_complete`; the likely reason is that the inbox prompt's approval wording made that action
+  look right.
 - `hr_process-ms-3`, "Siapa dalam onboarding sekarang?": `{hr}` 9/10 (and 5/5), `{email, hr}` 6/10 (and
-  3/5), `{hr, training}` 2/5. Selecting email made the model answer from the facts instead of calling
-  `hr_process_read`.
-- `product_stock-en-1`: `{products}` alone 7-8/10 over four runs (the failure: an answer "let me
+  3/5), `{hr, training}` 2/5. The failing outputs were answers listing names that are in the facts, not calls of
+  `hr_process_read`; the sets that failed all added a second area to `{hr}`, so the likely reason is
+  that the added email area made answering from the facts look sufficient.
+- `product_stock-en-1`: `{products}` alone 7-8/10 over four runs (the failing outputs: an answer "let me
   check" with reads `[read_current_record]` instead of `product_stock_read`); products plus any one of
   bookings, email, training, hr or inbox 10/10 each (50 samples).
 
@@ -273,7 +279,10 @@ from the HR work, not caused by this project).
 ### Widening (run 4)
 
 Run 4 ran with widening on: **0 of 625 samples widened (0%; the ceiling is 10%)**. No pass depends on
-widening. Its compare against the baseline prints two violations, `email_batch-ms-1` 5 to 3 and
+widening. Source of the count: the committed `candidate3_widen.txt` holds only FAIL lines, RATE lines and
+the total (PASS lines were filtered out when the output was captured), so the count cannot be audited from
+the file. It was read from the full output at run time: the run's filter kept any line with the word
+`widened`, and none appeared. No FAIL line in the committed file carries `widened`. Its compare against the baseline prints two violations, `email_batch-ms-1` 5 to 3 and
 `hr_process-en-1` 5 to 3, although nothing was widened, so its prompts equal run 5's, where both cases
 score 5/5. That is run-to-run noise of the same configuration (about 2 samples either way at repeat
 5), not a regression. The gate decision rests on run 5.
@@ -281,8 +290,8 @@ score 5/5. That is run-to-run noise of the same configuration (about 2 samples e
 ### Prompt sizes (characters; full prompt 36,402)
 
 Scoped prompts: email 20,599; hr 16,088; training 15,922; bookings 15,337; inbox 13,424; products 7,871
-(products always travels with inbox, so 15,058). Two-area sets run from 17,225 (bookings, inbox,
-products) to 29,963 (email, hr).
+(products always travels with inbox, so 15,058). Among the 125 cases, two-area sets run from 15,058
+(inbox, products) to 29,963 (email, hr); the three-area set bookings, inbox, products is 17,225.
 
 Over the 125 smoke cases under the final selector (a case with no signal keeps the full 36,402):
 
@@ -308,11 +317,20 @@ experiments of 5 to 10 samples. No sixth full run.
 - The model is not deterministic: the same configuration moves by about 2 samples at repeat 5 (runs 4
   and 5 have identical prompts and differ by 2 samples in total and by different cases). Read one case
   at one run with that in mind.
-- The products companion is a measured perturbation fix, not a root-cause fix: the record summary
-  already holds the stock count and the model sometimes answers from it instead of calling
-  `product_stock_read`. Another companion area works as well as inbox did.
+- The products companion is a measured perturbation fix, not a root-cause fix: the failing outputs were
+  answers ("let me check") instead of `product_stock_read`, and the likely reason (not shown) is that the
+  record summary already holds the stock count, so the model sometimes answers from it. Any one of the
+  other five areas as companion worked as well as inbox did.
 - `{email, hr}` plans carry the booking step shape without its prose (ledger ruling: revisit if stray
   booking steps appear on staging).
+- The weak-approve suppression has gaps (reviewer probes): "approve Razak's reply about the onboarding
+  task" selects `{email, hr}` without inbox, and with the inbox tab open, or through the previous-message
+  pass, "approve Aina's laptop task" selects inbox again (the combination that scored 0/5 in the
+  forced-area experiment). The widening net and the tab and record signals cover the first case, not the
+  second.
+- The weak who-is rule is lost when any other word matches: "who is the customer Razak" selects only
+  inbox and "who is Danial in HR" only hr (`directory_lookup` is email-only); widening, when on, covers
+  recall.
 - Widening also happens on a `resolve` refusal; that is outside the gate and is a ruling.
 - Nothing logs a widen yet. The switch-on PR should add it, so the live widened share can be read
   against the 10% ceiling.
