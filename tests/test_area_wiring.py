@@ -254,8 +254,9 @@ async def test_a_scoped_turn_logs_its_areas_the_widen_cause_and_the_final_action
     from structlog.testing import capture_logs
 
     secret = "SECRET-MESSAGE-TEXT-4711"
+    hr_email: frozenset[Area] = frozenset({"hr", "email"})
     cases = (
-        (FakeClient(ANSWER), frozenset({"hr", "email"}), "none", "answer"),
+        (FakeClient(ANSWER), hr_email, "none", "answer"),
         (FakeClient(OUT_OF_AREA, ANSWER), HR, "out_of_area", "answer"),
         (FakeClient("groq_invalid_output", ANSWER), HR, "invalid_output", "answer"),
     )
