@@ -38,6 +38,10 @@ from tests.test_workspace_registry import (  # noqa: F401 - fixture import
 )
 from tests.test_workspace_routing import FakeJev, _jev
 
+# The prompt's prose bullets ("- action: ...") follow the generated catalogue, whose lines
+# use the same "- action:" marker; tests that pick one prose bullet search from here.
+PROSE = SYSTEM_PROMPT[SYSTEM_PROMPT.index("\nFacts:\n") :]
+
 pytest_plugins = ["tests.test_console_sessions"]
 
 THREADS = "/console/v1/workspace/conversations"
@@ -1012,7 +1016,7 @@ def test_planner_prompt_offers_training_ask_and_keeps_training_submit_for_course
         "the user names only the course, write the learning_objective yourself in one sentence "
         "from their words (the user confirms the card); never give one of the two alone."
     ) in " ".join(SYSTEM_PROMPT.split())
-    ask = SYSTEM_PROMPT[SYSTEM_PROMPT.index("- training_ask:") :]
+    ask = PROSE[PROSE.index("- training_ask:") :]
     ask = " ".join(ask[: ask.index("\n- ")].split())
     assert "training_submit" in ask  # the line itself sends course requests to training_submit
     assert "item_id" in ask and "question" in ask
@@ -3336,13 +3340,13 @@ async def test_the_turn_completes_on_the_word_rules_when_jev_errors(planned, bod
 
 def _new_section() -> str:
     """The prompt's email_batch and plan bullets, from "- email_batch:" to the next bullet."""
-    start = SYSTEM_PROMPT.index("- email_batch:")
-    end = SYSTEM_PROMPT.index("\n- ", SYSTEM_PROMPT.index("- plan:"))
-    return SYSTEM_PROMPT[start:end]
+    start = PROSE.index("- email_batch:")
+    end = PROSE.index("\n- ", PROSE.index("- plan:"))
+    return PROSE[start:end]
 
 
 def test_planner_prompt_describes_email_batch_and_plan_in_one_short_section() -> None:
-    assert SYSTEM_PROMPT.count("- email_batch:") == 1 and SYSTEM_PROMPT.count("- plan:") == 1
+    assert PROSE.count("- email_batch:") == 1 and PROSE.count("- plan:") == 1
     section = " ".join(_new_section().split())
     assert section.index("- email_batch:") < section.index("- plan:")
     # Recipients: named people, typed addresses, customers or ONE fixed group.
@@ -3487,9 +3491,10 @@ def test_planner_prompt_asks_for_the_batch_mode_with_examples() -> None:
     """The model left mode out of "send the same email" batches: the prompt now asks for it
     every time, with one example of each value (synthetic, not the smoke wording)."""
     section = " ".join(_new_section().split())
-    assert 'Always set mode: "shared" when everyone gets the same text' in section
+    assert 'Always set mode: "personalised" when each email uses' in section
+    assert '"shared" when everyone gets the same text' in section
     assert 'separate messages alone are still "shared"' in section
-    assert '"personalised" when each email uses the person\'s own details' in section
+    assert "own details" in section
     assert "their own renewal date" in section
     flat = " ".join(SYSTEM_PROMPT.split())
     assert "Aina Rahman" not in flat and "Mei Ling" not in flat  # no smoke-case wording
@@ -3593,12 +3598,12 @@ def test_hr_process_read_is_stored_as_an_answer() -> None:
 
 
 def _process_bullet() -> str:
-    start = SYSTEM_PROMPT.index("- hr_process_read:")
-    return " ".join(SYSTEM_PROMPT[start : SYSTEM_PROMPT.index("\n- ", start + 1)].split())
+    start = PROSE.index("- hr_process_read:")
+    return " ".join(PROSE[start : PROSE.index("\n- ", start + 1)].split())
 
 
 def test_planner_prompt_names_the_five_process_views_in_one_bullet() -> None:
-    assert SYSTEM_PROMPT.count("- hr_process_read:") == 1
+    assert PROSE.count("- hr_process_read:") == 1
     bullet = _process_bullet()
     for view in ("my_tasks", "person_process", "who_onboarding", "who_leaving", "overdue"):
         assert view in bullet, view
@@ -3649,9 +3654,9 @@ def test_planner_prompt_keeps_neighbouring_actions_apart_from_process_reads() ->
 
 
 def test_planner_prompt_has_one_small_bullet_for_marking_a_task_done() -> None:
-    assert SYSTEM_PROMPT.count("- hr_task_complete:") == 1
-    start = SYSTEM_PROMPT.index("- hr_task_complete:")
-    bullet = " ".join(SYSTEM_PROMPT[start : SYSTEM_PROMPT.index("\n- ", start + 1)].split())
+    assert PROSE.count("- hr_task_complete:") == 1
+    start = PROSE.index("- hr_task_complete:")
+    bullet = " ".join(PROSE[start : PROSE.index("\n- ", start + 1)].split())
     for phrase in ("mark my task done", "tandakan tugasan saya sebagai selesai", "task is words"):
         assert phrase in bullet, phrase
     assert len(bullet) < 400  # the prompt is already long and the model is sensitive to it
@@ -3696,3 +3701,25 @@ def test_planner_prompt_lets_a_picked_process_option_come_back_as_person() -> No
         "the user picked one from offered options."
     ) in flat
     assert len(_process_bullet()) < 900
+
+
+def test_system_prompt_is_the_compact_catalogue() -> None:
+    """The prompt carries the generated catalogue (whose braces survive the f-string), not the
+    JSON schema, and stays under the ceiling the restructure was measured against."""
+    from csa.workspace.planner_catalogue import compact_catalogue
+
+    schema = PlannerOutput.model_json_schema()
+    assert compact_catalogue(schema) in SYSTEM_PROMPT
+    assert '"$defs"' not in SYSTEM_PROMPT
+    assert len(SYSTEM_PROMPT) < 24_000
+    for action in schema["properties"]["proposal"]["discriminator"]["mapping"]:
+        assert f"- {action}:" in SYSTEM_PROMPT
+
+
+def test_the_email_batch_bullet_states_personalised_before_shared() -> None:
+    """Compact-catalogue smoke: a Malay "their own renewal date" group request came back
+    "shared" in 2 of 5 runs, with the "shared" clause first; the personalised rule leads now."""
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert flat.index('Always set mode: "personalised" when each email uses') < flat.index(
+        '"shared" when everyone gets the same text'
+    )

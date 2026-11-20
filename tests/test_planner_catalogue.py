@@ -115,3 +115,11 @@ def test_self_reference_raises() -> None:
 
 def test_real_schema_is_smaller_than_json() -> None:
     assert len(compact_catalogue(SCHEMA)) < len(json.dumps(SCHEMA, separators=(",", ":"))) * 0.7
+
+
+def test_an_action_with_no_fields_says_so_instead_of_an_empty_object() -> None:
+    """``{}`` made the model write a second key after ``action`` and then close the object (a
+    malformed-JSON 400 on ``inbox_summary``); the old JSON schema had said it plainly."""
+    catalogue = compact_catalogue(_tiny())
+    assert "- act: no other fields" in catalogue
+    assert "{}" not in catalogue

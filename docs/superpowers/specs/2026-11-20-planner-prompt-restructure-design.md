@@ -180,3 +180,60 @@ A full run is 99 cases x 5 samples = 495 model calls on the owner's key. The pro
 one yes covering the whole project: up to 4 full runs at `--repeat 5` (the baseline, the first
 reproduction of B, and two candidates) plus targeted `--case` runs of up to 10 samples each for the
 regression fixes, and one final full run on staging after merge. A fifth full run needs a new yes.
+
+## Results of the build (2026-11-20)
+
+Whole smoke file, 99 cases at 5 samples, the same day, staging image, throwaway container. The four
+full runs of the budget:
+
+| Run | Prompt | Passing | Gate |
+|---|---|---|---|
+| 1 | current (JSON schema), baseline | 475 / 495 | reference |
+| 2 | generated catalogue, as variant B | 471 / 495 | 5 cases down |
+| 3 | + clarification wording, + `personalised` first | 469 / 495 | 4 cases down |
+| 4 | variant B + "no other fields" + `personalised` first | **479 / 495** | 2 cases down |
+
+Run 4 is the committed candidate (prompt 21,889 characters against 36,402). Against the baseline:
+up `email_batch-en-1` 2 to 5, `email_batch_rest-en-1` 2 to 5, `hr_process-en-5` 0 to 5,
+`hr_process-ms-1` 1 to 2; down `email_batch_rest-ms-1` 5 to 1, `hr_process_neg-en-5` 5 to 2,
+`plan_bookings-en-1` 5 to 4 (inside the tolerance). Two violations of the gate remain.
+
+### Fixed, with the cause
+
+- `attention-en-1` (5/5 to 0/5 in variant B): the catalogue wrote the no-field action `inbox_summary`
+  as `{}`; the model then wrote `{"action":"inbox_summary","}` (a malformed-JSON 400 from the
+  provider). A no-field action is now rendered as `no other fields`: 10/10.
+- `email_batch_group-ms-1`: the `shared` clause came first in the `email_batch` bullet; putting the
+  `personalised` rule first gives 10/10.
+- `directory-ms-3` came back to 10/10 without any wording change of its own (a layout shift).
+
+### Tried and not kept (targeted runs of 10 samples, sensitive-case battery of 16 cases)
+
+| Change | What it did |
+|---|---|
+| Clarification options "never a placeholder" | fixed `directory-ms-3`, broke `hr_process-ms-4` (0/10) |
+| "never a card or a clarification" in the approval rule | `hr_process_neg-en-5` 8/10, `hr_process-ms-4` 0/10 |
+| "(never an HR process task)" on `inbox_decision` | no effect on `neg-en-5` |
+| Render length and range limits (`(1-40 items)`, `(1-200 chars)`) | `email_batch_rest-ms-1` 9/10 (the model had written `recipients: []` and `subject: ""`, which the contract refuses), but `hr_process-en-4`, `ms-4`, `neg-en-5` to 0/10 |
+| Limits + "reads is only for ..." | HR reads back to 10/10; `email_batch_rest-ms-1` 0/10, `-en-1` 5/10 |
+| + carry-over wording for "the rest" | `hr_process-ms-1` 10/10, `neg-en-5` 9/10, `rest-ms-1` 7/10, but `training-ms-3` 1/10, `hr_process-ms-3` 4/10 |
+| Variant B + carry-over wording only | battery 124 / 160 against 132 for B |
+
+### What this says
+
+- Every change moved a different set of cases. The cases that flipped were in a different area from
+  the change (an email wording changed Malay HR reads and a training case). The single prompt couples
+  all areas: a fix in one area cannot be made without risking the others.
+- Some cases are plain noise: the identical run-4 prompt scored `hr_process_neg-en-5` 1/10, 9/10 and
+  2/5 within hours (the hosted model is not deterministic at temperature 0).
+- `email_batch_rest-ms-1` is not noise: it sits at about 20 to 40% on the compact prompt in every
+  measurement (the old prompt gave 5/5).
+- The generator is correct and worth keeping (it also carries the contract's docstrings and raises on
+  a construct it does not know); the gate script made each trial cheap and comparable.
+
+### Consequence for the approaches
+
+The evidence favours approach 2 of this document (area-scoped prompts chosen server-side) over more
+wording work on one prompt: with an HR turn seeing only HR and general actions, a change to email or
+training wording cannot flip an HR case. That needs its own design (how the area is chosen, what
+happens on a wrong choice) and is not part of this project.

@@ -111,7 +111,10 @@ def compact_catalogue(schema: dict[str, Any]) -> str:
         name = ref.split("/")[-1]
         node = defs[name]
         note = _note(node)
-        lines.append(f"- {action}: {_obj(node, defs, (name,), skip='action')}")
+        fields = _obj(node, defs, (name,), skip="action")
+        # An empty "{}" made the model add a second key after "action" and abort (a
+        # malformed-JSON 400 on inbox_summary), so a no-field action says so in words.
+        lines.append(f"- {action}: {fields if fields != '{}' else 'no other fields'}")
         if note:
             lines.append(f"  {note}")
     for name in NESTED_NOTES:
