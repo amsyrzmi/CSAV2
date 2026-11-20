@@ -1,0 +1,4 @@
+RATE hr_process-ms-3 10/10
+RATE hr_process_neg-en-5 10/10
+RATE product_stock-en-1 10/10
+30 passed, 0 failed

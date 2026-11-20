@@ -836,6 +836,27 @@ JEV_SWITCHES = {
 JEV_ENV_NAMES = {name for _, name, _ in JEV_SWITCHES.values()}
 
 
+def test_gateway_area_prompts_switch_is_off_by_default_and_reaches_the_gateway_only(
+    tmp_path: Path,
+) -> None:
+    from csa.core.settings import Settings
+
+    assert Settings.model_fields["WORKSPACE_AREA_PROMPTS"].default is False
+    (tmp_path / "default").mkdir()
+    default = render(tmp_path / "default", "staging-approved", "pipeline-approved")["services"]
+    assert default["gateway"]["environment"]["WORKSPACE_AREA_PROMPTS"] == "false"
+    (tmp_path / "on").mkdir()
+    on = render(
+        tmp_path / "on",
+        "staging-approved",
+        "pipeline-approved",
+        env_overrides={"CSA_STAGING_WORKSPACE_AREA_PROMPTS": "true"},
+    )["services"]
+    assert on["gateway"]["environment"]["WORKSPACE_AREA_PROMPTS"] == "true"
+    for name in ("worker", "delivery", "frontend"):
+        assert "WORKSPACE_AREA_PROMPTS" not in on[name].get("environment", {}), name
+
+
 def test_the_jev_switches_cover_every_optional_rollout_flag_but_the_secret() -> None:
     from scripts import staging_rollout
 

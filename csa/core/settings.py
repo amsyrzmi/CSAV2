@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     HR_ASSISTANT_ENABLED: bool = False
     # Planner-driven workspace turns (page_context); off means those turns get 503.
     WORKSPACE_ASSISTANT_ENABLED: bool = False
+    # The planner prompt scoped to the areas a turn touches (csa/workspace/area_select.py), with a
+    # one-call widening to the full prompt when the plan leaves them. Off keeps the full prompt.
+    WORKSPACE_AREA_PROMPTS: bool = False
     # Explicit opt-in; local/OpenAI-compatible transcription endpoint, never browser supplied.
     VOICE_STT_ENDPOINT: HttpUrl | None = None
     VOICE_STT_API_KEY: SecretStr | None = None

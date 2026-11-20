@@ -16,7 +16,8 @@ from typing import Any
 import pytest
 from csa.decide.completion import CompletionError
 from csa.email.models import DraftProposal
-from csa.workspace.planner import PlannerOutput, detect_language
+from csa.workspace.planner import SYSTEM_PROMPT, PlannerOutput, detect_language, planner_prompt
+from csa.workspace.prompt_areas import ACTION_AREA
 from csa.workspace.rules import ADDRESS
 from csa.workspace.service import REST_WORDS
 from pydantic import SecretStr, TypeAdapter, ValidationError
@@ -52,7 +53,18 @@ FEATURES = (
     "email_batch_group",
     "email_batch_rest",
     "plan_bookings",
+    "cross_area",
+    "follow_up",
+    "tab_context",
+    "inbox_decision",
+    "product_stock",
+    "scoped_answer",
+    "no_area",
+    "hr_date",
 )
+# Features that have one language only: hr_date-en-1 was ADDED AFTER THE GATE and is NOT
+# MEASURED (it checks that the company's clock reaches a scoped HR turn).
+UNPAIRED = {"hr_date"}
 PEOPLE_ACTIONS = ("hr_person_add", "hr_person_update", "hr_person_leave", "people_query")
 SCRIPTED_SUBJECT = "SCRIPTED-SUBJECT-7f3a"
 SCRIPTED_BODY = "SCRIPTED-BODY-91c2 the scripted wording"
@@ -80,6 +92,9 @@ def test_smoke_cases_parse_and_cover_features() -> None:
         smoke.build_facts(case)  # every preset and override builds valid PlannerFacts
     for feature in FEATURES:
         languages = [case.language for case in cases if _feature(case.id) == feature]
+        if feature in UNPAIRED:
+            assert languages, feature
+            continue
         assert len(languages) >= 2, feature
         assert {"en", "ms"} <= set(languages), feature
     assert {case.language for case in cases} == {"en", "ms"}
@@ -148,7 +163,7 @@ class ScriptedModel:
         if action == "answer":
             return {"action": "answer", "markdown": SCRIPTED_TEXT}
         if action == "booking_action":
-            return {"action": "booking_action", **case.expect.fields}
+            return {"action": "booking_action", "change": "book", **case.expect.fields}
         if action == "navigate":
             # Subscriptions is active in no preset, so it is locked; HR is open in staff_basic.
             # A case that pins its tab gets that tab, as the model would plan it.
@@ -160,8 +175,11 @@ class ScriptedModel:
         if action == "email_compose":
             # The recipient the user asked for: the address in the message, else my_manager.
             found = ADDRESS.search(case.message)
+            picked = re.match(r"Use employee (\S+) for: ", case.message)
             if found is not None:
                 recipient: dict[str, Any] = {"recipient_address": found.group(0)}
+            elif picked is not None:  # a colleague the user picked from the directory result
+                recipient = {"recipient_employee_id": picked.group(1)}
             else:
                 assert facts.my_manager is not None and facts.my_manager.employee_id is not None
                 recipient = {"recipient_employee_id": str(facts.my_manager.employee_id)}
@@ -209,6 +227,21 @@ class ScriptedModel:
             return {"action": "plan", "steps": steps}
         if action == "training_ask":
             return {"action": "training_ask", "question": SCRIPTED_TEXT}
+        if action == "product_stock_read":
+            return {"action": "product_stock_read"}
+        if action == "inbox_decision":
+            # The ids the open conversation's summary carries, as the model would copy them.
+            assert case.facts.record is not None and case.facts.record_summary is not None
+            approval = re.search(r"approval (\d+)", case.facts.record_summary)
+            version = re.search(r"inbox_version (\d+)", case.facts.record_summary)
+            assert approval is not None and version is not None
+            return {
+                "action": "inbox_decision",
+                "approval_id": int(approval.group(1)),
+                "conversation_id": case.facts.record.id,
+                "expected_version": int(version.group(1)),
+                **case.expect.fields,
+            }
         if action == "training_submit":
             return {
                 "action": "training_submit",
@@ -259,7 +292,8 @@ def test_smoke_output_is_content_free_and_exit_code(capsys: pytest.CaptureFixtur
     assert len(passed) == len(cases) - 1
     for line in passed:
         assert re.fullmatch(
-            r"PASS [a-z_]+-(en|ms)-\d+ action=[a-z_]+( replanned)?( mode_inferred)?", line
+            r"PASS [a-z_]+-(en|ms)-\d+ action=[a-z_]+( replanned)?( widened)?( mode_inferred)?",
+            line,
         ), line
     assert lines[-1] == f"{len(cases) - 1} passed, 1 failed"
 
@@ -824,3 +858,248 @@ def test_smoke_checks_the_mode_the_server_drafts_with_and_marks_an_inferred_one(
     # The planner's own (wrong) choice is kept, so it still fails.
     assert smoke.main(["--case", "email_batch-en-1"], client=WrongMode()) == 1
     assert "FAIL email_batch-en-1 action=email_batch fields" in capsys.readouterr().out
+
+
+# --- Areas, record facts, --areas and --no-widen ----------------------------------------------
+# The share of cases that get a scoped prompt. A case with no signal at all (a bare navigate to
+# a tab no area owns, a general question) keeps the full prompt on purpose.
+SCOPED_SHARE_FLOOR = 0.9
+
+
+def _case(**overrides: Any) -> smoke.SmokeCase:
+    base: dict[str, Any] = {
+        "id": "compose-en-9",
+        "language": "en",
+        "message": "Email my manager that I will be late",
+        "facts": {"preset": "staff_basic"},
+        "expect": {"actions": ["email_compose"]},
+    }
+    return TypeAdapter(smoke.SmokeCase).validate_python({**base, **overrides})
+
+
+def test_expect_areas_rejects_an_unknown_area() -> None:
+    assert _case(expect={"actions": ["email_compose"], "areas": ["email"]}).expect.areas == [
+        "email"
+    ]
+    assert _case().expect.areas == []
+    with pytest.raises(ValidationError):
+        _case(expect={"actions": ["email_compose"], "areas": ["finance"]})
+    with pytest.raises(ValidationError):
+        _case(expect={"actions": ["email_compose"], "colour": "red"})
+
+
+def test_a_case_with_a_record_and_summary_reaches_the_planner_facts() -> None:
+    summary = "Synthetic open conversation about a late delivery."
+    case = _case(
+        facts={
+            "preset": "staff_basic",
+            "page_tab": "inbox",
+            "record": {"kind": "conversation", "id": "synthetic-conversation-1"},
+            "record_summary": summary,
+        }
+    )
+    facts = smoke.build_facts(case)
+    assert facts.page_context is not None
+    assert facts.page_context.tab == "inbox"
+    assert facts.page_context.record is not None
+    assert facts.page_context.record.kind == "conversation"
+    assert facts.page_context.record.id == "synthetic-conversation-1"
+    assert facts.record_summary == summary
+    assert smoke.build_facts(_case()).record_summary is None
+    assert smoke.build_facts(_case()).page_context.record is None  # type: ignore[union-attr]
+    with pytest.raises(ValidationError):
+        _case(facts={"preset": "staff_basic", "record_summary": "x" * 501})
+
+
+def test_the_product_cases_run_with_the_business_service_active() -> None:
+    """An open product record is described only when the Business gate is open: the facts of a
+    product case must say it is, or the model may rightly answer "not active"."""
+    from csa.workspace.rules import TAB_GATES, unlocked
+
+    cases = {case.id: case for case in smoke.load_cases()}
+    ids = ("product_stock-en-1", "product_stock-ms-1", "scoped_answer-en-6")
+    for case_id in ids:
+        assert cases[case_id].facts.preset == "staff_business", case_id
+        packages = smoke.build_facts(cases[case_id]).packages
+        assert unlocked(packages, TAB_GATES["business"]), case_id
+    # The other presets keep Business closed, as a company without it would.
+    bare = smoke.build_facts(cases["navigate-en-1"]).packages
+    assert not unlocked(bare, TAB_GATES["business"])
+
+
+def test_areas_flag_scopes_the_facts_and_a_default_run_leaves_them_unset() -> None:
+    case = next(case for case in smoke.load_cases() if case.id == "compose-en-1")
+    assert smoke.build_facts(case).areas is None
+    assert smoke.build_facts(case, use_areas=False).areas is None
+    scoped = smoke.build_facts(case, use_areas=True).areas
+    assert scoped is not None
+    assert "email" in scoped
+
+    class Capturing(ScriptedModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.systems: list[str] = []
+
+        async def json_completion(
+            self,
+            schema: type[Any],
+            *,
+            system: str,
+            user: str,
+            timeout: float,
+            max_tokens: int = 1500,
+        ) -> Any:
+            if schema is PlannerOutput:
+                self.systems.append(system)
+            return await super().json_completion(
+                schema, system=system, user=user, timeout=timeout, max_tokens=max_tokens
+            )
+
+    default = Capturing()
+    assert smoke.main(["--case", case.id], client=default) == 0
+    assert default.systems == [SYSTEM_PROMPT]
+    with_areas = Capturing()
+    assert smoke.main(["--case", case.id, "--areas"], client=with_areas) == 0
+    assert len(with_areas.systems) == 1
+    assert with_areas.systems[0] != SYSTEM_PROMPT
+
+
+class OutOfAreaModel(ScriptedModel):
+    """Answers the first planner call with an action no email-scoped prompt offers, then
+    normally; records each call's system prompt."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.systems: list[str] = []
+
+    async def json_completion(
+        self, schema: type[Any], *, system: str, user: str, timeout: float, max_tokens: int = 1500
+    ) -> Any:
+        if schema is PlannerOutput:
+            self.systems.append(system)
+            if len(self.systems) == 1:
+                proposal = {"action": "training_ask", "question": SCRIPTED_TEXT}
+                return PlannerOutput.model_validate({"proposal": proposal})
+        return await super().json_completion(
+            schema, system=system, user=user, timeout=timeout, max_tokens=max_tokens
+        )
+
+
+def test_no_widen_shows_a_selector_miss_and_the_default_marks_a_widened_sample(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    case_id = "compose-en-1"
+    case = next(case for case in smoke.load_cases() if case.id == case_id)
+    scoped = smoke.build_facts(case, use_areas=True).areas
+    assert scoped is not None
+    assert "training" not in scoped  # the scripted action below is out of this scope
+
+    miss = OutOfAreaModel()
+    assert smoke.main(["--case", case_id, "--areas", "--no-widen"], client=miss) == 1
+    out = capsys.readouterr().out
+    assert f"FAIL {case_id} action=training_ask actions" in out
+    assert "widened" not in out
+    assert len(miss.systems) == 1
+
+    widened = OutOfAreaModel()
+    assert smoke.main(["--case", case_id, "--areas"], client=widened) == 0
+    out = capsys.readouterr().out
+    assert f"PASS {case_id} action=email_compose replanned widened" in out
+    assert len(widened.systems) == 2
+    assert widened.systems[1] == SYSTEM_PROMPT
+    _assert_content_free(out)
+
+    # With --repeat the RATE line keeps its shape for scripts/smoke_compare.py.
+    again = OutOfAreaModel()
+    assert smoke.main(["--case", case_id, "--areas", "--repeat", "2"], client=again) == 0
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert f"RATE {case_id} 2/2" in lines
+    assert lines[-1] == "2 passed, 0 failed"
+
+
+def _case_areas(case: smoke.SmokeCase) -> set[str]:
+    if case.expect.areas:
+        return set(case.expect.areas)
+    derived = {ACTION_AREA[action] for action in case.expect.actions}
+    return derived - {"general"}
+
+
+def _selected_areas(case: smoke.SmokeCase) -> frozenset[str] | None:
+    return smoke.build_facts(case, use_areas=True).areas
+
+
+def test_a_default_run_never_widens_and_never_calls_twice_on_an_out_of_area_output(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Without ``--areas`` the prompt is the full one: an action of any area is in scope, so the
+    case fails on its action alone, with one call, no ``widened`` and no ``replanned``."""
+    case_id = "compose-en-1"
+    model = OutOfAreaModel()
+    assert smoke.main(["--case", case_id], client=model) == 1
+    out = capsys.readouterr().out
+    assert f"FAIL {case_id} action=training_ask actions" in out
+    assert "widened" not in out
+    assert "replanned" not in out
+    assert model.systems == [SYSTEM_PROMPT]
+
+
+def test_selector_covers_the_expected_areas_of_every_case() -> None:
+    """Offline, no model: the selector never leaves out an area a case's expected actions need
+    (it may select nothing, which keeps the full prompt)."""
+    missed = [
+        f"{case.id} missing {sorted(_case_areas(case) - selected)}"
+        for case in smoke.load_cases()
+        if (selected := _selected_areas(case)) is not None and not _case_areas(case) <= selected
+    ]
+    assert missed == []
+
+
+def test_scoped_share_is_at_least_90_percent() -> None:
+    """At least 90% of the cases get a scoped prompt; the rest keep the full one on purpose."""
+    cases = smoke.load_cases()
+    unscoped = [case.id for case in cases if _selected_areas(case) is None]
+    scoped = len(cases) - len(unscoped)
+    share = scoped / len(cases)
+    print(f"\nscoped prompt share: {scoped}/{len(cases)} = {share:.1%}; full prompt: {unscoped}")
+    assert share >= SCOPED_SHARE_FLOOR
+
+
+def test_cases_that_match_no_area_keep_the_full_prompt() -> None:
+    """A case with ``areas: []`` and only general actions (answer, clarification, navigate) is
+    written to match nothing: the selector must return None, so the prompt is the full one."""
+    matches_nothing = [case for case in smoke.load_cases() if case.id.startswith("no_area-")]
+    assert len(matches_nothing) >= 2
+    for case in matches_nothing:
+        assert not case.expect.areas, case.id
+        assert not _case_areas(case), case.id
+        assert _selected_areas(case) is None, case.id
+
+
+def test_the_relative_date_hr_case_scopes_to_hr_and_still_carries_the_clock() -> None:
+    """hr_date-en-1 (ADDED AFTER THE GATE, NOT MEASURED): "his last day is this Friday" needs
+    today's date, so a scoped HR turn must still carry the company's clock."""
+    case = next(case for case in smoke.load_cases() if case.id == "hr_date-en-1")
+    assert case.expect.actions == ["hr_person_leave"]
+    assert case.expect.areas == ["hr"]
+    assert _selected_areas(case) == {"hr"}
+    facts = smoke.build_facts(case, use_areas=True)
+    assert facts.bookings is not None and facts.bookings.weekday == "Thursday"
+    user = planner_prompt(case.message, facts)
+    assert '"now_local":"2026-11-05 14:03"' in user and '"weekday":"Thursday"' in user
+
+
+def test_precision_report() -> None:
+    """REPORT ONLY (run with ``-s``): per scoped case, how many selected areas the case does not
+    need, and the mean over the scoped cases. Nothing is asserted: it measures the cost of the
+    selector erring on the side of including more."""
+    rows: list[tuple[str, int]] = []
+    for case in smoke.load_cases():
+        selected = _selected_areas(case)
+        if selected is not None:
+            rows.append((case.id, len(selected - _case_areas(case))))
+    mean = sum(extra for _, extra in rows) / len(rows)
+    print()
+    for case_id, extra in rows:
+        print(f"precision {case_id}: {extra} extra")
+    print(f"precision mean extra areas over {len(rows)} scoped cases: {mean:.2f}")
+    assert rows

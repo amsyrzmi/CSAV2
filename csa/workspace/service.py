@@ -57,6 +57,7 @@ from csa.metering.context import MeterContext, meter_context
 from csa.training import ask as training_ask
 from csa.training.access import can_manage
 from csa.workspace import email_batch, hr_people, hr_processes, hr_task_card, stock
+from csa.workspace.area_select import select_areas
 from csa.workspace.contracts import (
     MAX_STEPS,
     MAX_WORK_TTL,
@@ -123,6 +124,7 @@ from csa.workspace.planner import (
     detect_language,
     page_hint,
 )
+from csa.workspace.prompt_areas import allowed_actions
 from csa.workspace.registry import PreparedProposal, ProposalRegistry
 from csa.workspace.routing import Needs, route_facts
 from csa.workspace.rules import ADDRESS as _ADDRESS
@@ -145,6 +147,13 @@ from csa.workspace.rules import (
 )
 from csa.workspace.rules import TAB_GATES as _TAB_GATES
 from csa.workspace.rules import unlocked as _unlocked
+from csa.workspace.words import (
+    _MAIL_WORDS,
+    _MANAGER_WORDS,
+    _PEOPLE_WORDS,
+    _TEAM_WORDS,
+    _TRAINING_WORDS,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -1099,10 +1108,6 @@ async def record_summary(
 
 HISTORY_TURNS = 6
 HISTORY_CHARS = 1000  # per stored body, bounding the prompt
-# "my boss" in English and Bahasa Melayu; resolved from the caller's own HR record.
-_MANAGER_WORDS = re.compile(
-    r"\b(boss|manager|supervisor|line manager|bos|pengurus|penyelia|ketua)\b", re.IGNORECASE
-)
 
 
 def _prior_turns(rows: list[dict[str, Any]], current: str) -> list[PriorTurn]:
@@ -1157,27 +1162,6 @@ async def _my_manager(
 
 MAILBOX_FACTS = 10
 MAILBOX_SUBJECT_CHARS = 120
-# The message is about email (a reply, a thread, a sender, the inbox) in English or Malay.
-_MAIL_WORDS = re.compile(
-    r"\b(e-?mails?|e-?mel|inbox|gmail|mail|repl(?:y|ies|ied|ying)|respond|threads?|senders?"
-    r"|attention|balas|balasan|peti masuk)\b",
-    re.IGNORECASE,
-)
-_TEAM_WORDS = re.compile(r"\b(team|my reports|direct reports|pasukan|anak buah)\b", re.IGNORECASE)
-# The message is about training in English or Malay; resolves the caller's own HR readiness.
-_TRAINING_WORDS = re.compile(
-    r"\b(trainings?|courses?|workshops?|certifications?|seminars?|latihan|kursus|bengkel"
-    r"|pensijilan)\b",
-    re.IGNORECASE,
-)
-# The message is about people records (adding, changing, leaving, who reports to whom) in
-# English or Malay; resolves the caller's People view (people_access).
-_PEOPLE_WORDS = re.compile(
-    r"\b(add|hire[sd]?|hiring|new staff|chang(?:e|es|ed|ing)|managers?|departments?|leaving"
-    r"|resign(?:s|ed|ing|ation)?|last day|reports? to|who is in|tambah|pekerja baru|tukar"
-    r"|pengurus|jabatan|berhenti|letak jawatan|hari terakhir|melapor kepada|siapa dalam)\b",
-    re.IGNORECASE,
-)
 _EMPLOYEE_ID = re.compile(
     r"(?<![0-9A-Fa-f-])[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}(?![0-9A-Fa-f-])"
 )
@@ -1328,6 +1312,17 @@ async def planner_facts(
     # Whatever the words and the tab: a company with Bookings open always gives the model its
     # clock (one time-zone read), so no phrasing is wrongly told that bookings are unavailable.
     booked = await booking_facts(request, actor, client_id, packages)
+    # The scoped prompt is behind WORKSPACE_AREA_PROMPTS (app.state, off by default): off, no
+    # selection runs and the turn keeps the full prompt.
+    areas = None
+    if getattr(request.app.state, "workspace_area_prompts", False) is True:
+        areas = select_areas(
+            turn.body,
+            tab=context.tab if context is not None else None,
+            record_kind=context.record.kind if context and context.record else None,
+            previous=history[-1] if history else None,
+            needs=needs,
+        )
     return PlannerFacts(
         role=actor.role,
         packages=packages,
@@ -1342,6 +1337,7 @@ async def planner_facts(
         people_access=people,
         bookings=booked,
         page_hint=page_hint(context),
+        areas=areas,
     )
 
 
@@ -1463,11 +1459,22 @@ def _fallback(
     return question, _Planned(result=live, stored=stored)
 
 
+def _log_scoped_turn(facts: PlannerFacts, cause: str, action: str) -> None:
+    """One content-free line per scoped turn: the selected areas, why (if at all) it widened to
+    the full prompt, and the final action. It lets an in-area miss (the model followed a schema
+    that was too narrow and answered or asked) be audited: widening cannot see those. No message
+    text, no ids."""
+    if facts.areas is not None:
+        logger.info("workspace_scoped_turn", areas=sorted(facts.areas), widen=cause, action=action)
+
+
 async def _corrected_plan(
     planner: WorkspacePlanner,
     message: str,
     facts: PlannerFacts,
     resolve: Callable[[WorkspaceProposal], Awaitable[_Planned]],
+    *,
+    widen_enabled: bool = True,
 ) -> tuple[WorkspaceProposal, _Planned]:
     """Plan and resolve the turn with at most two model calls: one correction per turn.
 
@@ -1478,23 +1485,51 @@ async def _corrected_plan(
     ``resolve`` and every gate in it again: a content question gets one plain question with no
     options, a named violation gets the M7 fallback (``_fallback``), and anything else
     resolves normally. A refusal with no named reason, and any planner error, is raised as is.
+
+    A scoped turn (``facts.areas`` set) has one more reason for the second call: the first plan
+    names an action outside the selected areas, or the first call was refused with no named
+    reason. That call widens: it uses the full prompt and is final. A note re-plan keeps the
+    scoped prompt. ``widen_enabled=False`` (the smoke's ``--no-widen``) never widens.
     """
     note: str | None = None
+    widen = False
+    cause = "none"  # why the turn widened: none, out_of_area or invalid_output
     for final in (False, True):
         try:
-            proposal = await planner.plan(message, facts, note=note)
+            if widen:
+                proposal = await planner.plan(message, facts, note=note, widen=True)
+            else:
+                proposal = await planner.plan(message, facts, note=note)
+            if (
+                not final
+                and widen_enabled
+                and facts.areas is not None
+                and proposal.action not in allowed_actions(facts.areas)
+            ):
+                widen = True
+                cause = "out_of_area"
+                continue
             if _corrects_content(proposal, message, facts):
                 if not final:
                     note = CONTENT_NOTE
                     continue
                 question = _TEXT[facts.language]["content_question"]
                 proposal = ClarificationProposal(action="clarification", question=question)
-            return proposal, await resolve(proposal)
+            planned = await resolve(proposal)
+            _log_scoped_turn(facts, cause, proposal.action)
+            return proposal, planned
         except PlannerInvalidOutput as exc:
             if exc.reason not in CORRECTION_NOTES:
+                if not final and widen_enabled and facts.areas is not None:
+                    widen = True
+                    cause = "invalid_output"
+                    continue
+                _log_scoped_turn(facts, cause, "refused")
                 raise
             if final:
-                return _fallback(exc.reason, message, facts)
+                fallback = _fallback(exc.reason, message, facts)
+                _log_scoped_turn(facts, cause, fallback[0].action)
+                return fallback
             note = CORRECTION_NOTES[exc.reason]
     raise AssertionError("the second plan is always final")
 

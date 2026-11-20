@@ -21,8 +21,8 @@ docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke
   or an unknown case id.
 - The cases live in `csa/workspace/smoke_cases.json`. A unit test checks that every case id appears
   in this checklist and that every id cited here is a case.
-- A run is about 110 model calls: one planner call for each of the 99 cases plus one drafting call
-  for each of the 11 draft cases. With re-plans it is up to about 209 (up to twice the cases, plus
+- A run is about 136 model calls: one planner call for each of the 125 cases plus one drafting call
+  for each of the 11 draft cases. With re-plans it is up to about 261 (up to twice the cases, plus
   the drafting calls).
 
 **What a PASS checks, and nothing more.** Each case goes through the turn's own correction loop (at
@@ -493,8 +493,8 @@ planner, decides what that member sees.
 
 | Prompt | Setup | Expected | Smoke id |
 | --- | --- | --- | --- |
-| Approve this reply | Customer conversation open with a held reply | An approve card for that held reply | manual |
-| Tolak balasan ini | Customer conversation open with a held reply | Kad tolak untuk balasan itu | manual |
+| Approve this reply | Customer conversation open with a held reply | An approve card for that held reply | manual (the planner smoke case `inbox_decision-en-1` checks only the plan, with a scripted resolver, not the real approve flow) |
+| Tolak balasan ini | Customer conversation open with a held reply | Kad tolak untuk balasan itu | manual (the planner smoke case `inbox_decision-ms-1` checks only the plan, with a scripted resolver, not the real approve flow) |
 
 ## Don't send
 
@@ -564,6 +564,41 @@ to a path outside the repository; the `jev` row at least 90 percent on intent, l
 the `signals` rows (provider `jev`, or `llm` with a fallback reason) and that a company with its own
 stored `decide_mode` is unaffected. To turn one area off again, a reviewed PR sets its
 `CSA_STAGING_ASSISTANT_DECIDER_*` line to `llm`.
+
+## Scoped prompts: cross-area, follow-up, tab and record turns (2026-11-20)
+
+These cases test the planner on turns that span areas or lean on the page, so they also gate the
+area-scoped prompt (`--areas`, see the planner area prompts design). Each case names the prompt
+areas its expected action needs; an offline test checks that the area selector includes them. All
+data is synthetic. A PASS checks only the action and the fields named, as above.
+
+| Prompt | Setup | Expected | Smoke id |
+| --- | --- | --- | --- |
+| Send an email to aina.rahman@example.com saying my leave starts on Monday | Gmail connected | A Send card to exactly that address (an email that mentions leave is still an email) | `cross_area-en-1` |
+| Tolong hantar emel kepada danial.hakim@example.com bahawa cuti saya bermula hari Isnin | Gmail connected | The same, in Malay | `cross_area-ms-1` |
+| Book Room A tomorrow at 3 pm with Aina Rahman and Danial Hakim, then email both of them the details | Bookings on | A booking card, or a plan card of the booking and an email to both; never only an email and never a question | `cross_area-en-2` |
+| Tolong tempah bilik B esok pukul 10 pagi dengan Aina Rahman dan Danial Hakim, kemudian hantar emel kepada mereka berdua | Bookings on | The same, in Malay | `cross_area-ms-2` |
+| Please request a first aid training course for me, I start HR onboarding next week | Staff linked with training access | A training request or a question, never an HR process read | `cross_area-en-3` |
+| The first aid training, so I can cover the front desk | The last turn asked "What is the course called?" | A training request: the follow-up answers the earlier question | `follow_up-en-1` |
+| Hari terakhir dia 15 Disember 2026, dia letak jawatan | The last turn asked for Danial's last day; HR people access | A mark-as-leaving card: the reason is resigned | `follow_up-ms-1` |
+| Use employee (id) for: Send an email to Razak about the invoice | The last turn was a directory lookup that offered that id | An email to the picked colleague, never another lookup | `follow_up-en-2` |
+| Who is in the Sales department? | The Email tab is open | A People list for Sales (an HR question asked on the Email tab) | `tab_context-en-1` |
+| Siapa dalam jabatan Sales? | The Email tab is open | The same, in Malay | `tab_context-ms-1` |
+| Send an email to aina.rahman@example.com saying the report is ready | The HR tab is open | A Send card to exactly that address (an email asked on the HR tab) | `tab_context-en-2` |
+| How many of these do we have left? | Business active, a TikTok Shop product open on the Business tab | A live stock read of that product, never an answer from memory | `product_stock-en-1` |
+| Berapa banyak lagi stok yang kita ada untuk produk ini? | The same (Business active) | The same, in Malay | `product_stock-ms-1` |
+| What does this video say about exits? | A ready video open in the Training library | A question about that video (training_ask), never a training request | `training_ask-en-2` |
+| Apa yang video ini cakap tentang pintu keluar? | The same | The same, in Malay | `training_ask-ms-2` |
+| What is the capital of France? | none | An answer or a question: nothing in the message belongs to an area, so the full prompt runs | `no_area-en-1` |
+| Apa nama ibu negara Perancis? | none | The same, in Malay | `no_area-ms-1` |
+| Email my team that the stocktake is on Friday | Staff who approve nobody's work | An answer that emailing the team is unavailable, no email card | `scoped_answer-en-1` |
+| Please approve the held reply on this conversation | A customer conversation open with no held reply | An answer or a question, never an approve card | `scoped_answer-en-2` |
+| I would like to request a leadership workshop | Staff with no employee link | An answer, no training request | `scoped_answer-en-3` |
+| Mark Razak as leaving, last day 20 December 2026, he resigned | Staff without HR people access | An answer that People access does not allow it, no card | `scoped_answer-en-4` |
+| Tandakan Razak akan berhenti, hari terakhir 20 Disember 2026, dia letak jawatan | The same | The same, in Malay | `scoped_answer-ms-1` |
+| Is Room A free tomorrow? | The Bookings service not active | An answer that Bookings is not active, no booking card | `scoped_answer-en-5` |
+| Please cancel order 1042 on TikTok Shop and refund the customer | Business active | An answer that it is done in TikTok Shop Seller Center, no stock read | `scoped_answer-en-6` |
+| Aina is leaving, her last day is this Friday, she resigned | HR owner, Bookings open (the clock reads Thursday 5 November 2026) | A leave with last_day 2026-11-06 and reason resigned (the company's clock reaches a scoped HR turn). ADDED AFTER THE GATE, NOT MEASURED: it needs one confirm smoke run before the area prompts are switched on | `hr_date-en-1` |
 
 ## Customer persona and planner fixes (2026-11-09)
 

@@ -1718,5 +1718,619 @@
         "training_submit"
       ]
     }
+  },
+  {
+    "id": "cross_area-en-1",
+    "language": "en",
+    "message": "Send an email to aina.rahman@example.com saying my leave starts on Monday",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "email_compose"
+      ],
+      "areas": [
+        "email"
+      ],
+      "send": true,
+      "recipient": "aina.rahman@example.com"
+    }
+  },
+  {
+    "id": "cross_area-ms-1",
+    "language": "ms",
+    "message": "Tolong hantar emel kepada danial.hakim@example.com bahawa cuti saya bermula hari Isnin",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "email_compose"
+      ],
+      "areas": [
+        "email"
+      ],
+      "send": true,
+      "recipient": "danial.hakim@example.com"
+    }
+  },
+  {
+    "id": "cross_area-en-2",
+    "language": "en",
+    "message": "Book Room A tomorrow at 3 pm with Aina Rahman and Danial Hakim, then email both of them the details",
+    "facts": {
+      "preset": "staff_bookings"
+    },
+    "expect": {
+      "actions": [
+        "booking_action",
+        "plan"
+      ],
+      "areas": [
+        "bookings",
+        "email"
+      ],
+      "not_actions": [
+        "email_compose",
+        "email_team",
+        "email_batch",
+        "clarification"
+      ]
+    }
+  },
+  {
+    "id": "cross_area-ms-2",
+    "language": "ms",
+    "message": "Tolong tempah bilik B esok pukul 10 pagi dengan Aina Rahman dan Danial Hakim, kemudian hantar emel kepada mereka berdua",
+    "facts": {
+      "preset": "staff_bookings"
+    },
+    "expect": {
+      "actions": [
+        "booking_action",
+        "plan"
+      ],
+      "areas": [
+        "bookings",
+        "email"
+      ],
+      "not_actions": [
+        "email_compose",
+        "email_team",
+        "email_batch",
+        "clarification"
+      ]
+    }
+  },
+  {
+    "id": "cross_area-en-3",
+    "language": "en",
+    "message": "Please request a first aid training course for me, I start HR onboarding next week",
+    "facts": {
+      "preset": "staff_with_hr_linked"
+    },
+    "expect": {
+      "actions": [
+        "training_submit",
+        "clarification"
+      ],
+      "areas": [
+        "training"
+      ],
+      "not_actions": [
+        "hr_process_read"
+      ],
+      "no_placeholder_options": true
+    }
+  },
+  {
+    "id": "follow_up-en-1",
+    "language": "en",
+    "message": "The first aid training, so I can cover the front desk",
+    "facts": {
+      "preset": "staff_with_hr_linked",
+      "history": [
+        {
+          "message": "Please request a training course for me",
+          "action": "clarification",
+          "result": "clarification",
+          "question": "What is the course called?"
+        }
+      ]
+    },
+    "expect": {
+      "actions": [
+        "training_submit"
+      ],
+      "areas": [
+        "training"
+      ],
+      "not_actions": [
+        "training_ask",
+        "clarification"
+      ]
+    }
+  },
+  {
+    "id": "follow_up-ms-1",
+    "language": "ms",
+    "message": "Hari terakhir dia 15 Disember 2026, dia letak jawatan",
+    "facts": {
+      "preset": "hr_people_manager",
+      "history": [
+        {
+          "message": "Tandakan Danial akan berhenti",
+          "action": "clarification",
+          "result": "clarification",
+          "question": "Apakah hari terakhir dan sebabnya?"
+        }
+      ]
+    },
+    "expect": {
+      "actions": [
+        "hr_person_leave"
+      ],
+      "areas": [
+        "hr"
+      ],
+      "not_actions": [
+        "hr_process_read"
+      ],
+      "fields": {
+        "reason": "resigned"
+      }
+    }
+  },
+  {
+    "id": "follow_up-en-2",
+    "language": "en",
+    "message": "Use employee 9e8d7c6b-5a49-4382-b1a0-f9e8d7c6b504 for: Send an email to Razak about the invoice",
+    "facts": {
+      "preset": "staff_basic",
+      "history": [
+        {
+          "message": "Send an email to Razak about the invoice",
+          "action": "directory_lookup",
+          "result": "directory",
+          "offered_employee_ids": [
+            "9e8d7c6b-5a49-4382-b1a0-f9e8d7c6b504"
+          ],
+          "chosen": "9e8d7c6b-5a49-4382-b1a0-f9e8d7c6b504"
+        }
+      ]
+    },
+    "expect": {
+      "actions": [
+        "email_compose"
+      ],
+      "areas": [
+        "email"
+      ],
+      "not_actions": [
+        "directory_lookup",
+        "clarification"
+      ]
+    }
+  },
+  {
+    "id": "tab_context-en-1",
+    "language": "en",
+    "message": "Who is in the Sales department?",
+    "facts": {
+      "preset": "staff_basic",
+      "page_tab": "email"
+    },
+    "expect": {
+      "actions": [
+        "people_query"
+      ],
+      "areas": [
+        "hr"
+      ],
+      "not_actions": [
+        "directory_lookup",
+        "hr_process_read"
+      ],
+      "fields": {
+        "department": "Sales"
+      }
+    }
+  },
+  {
+    "id": "tab_context-ms-1",
+    "language": "ms",
+    "message": "Siapa dalam jabatan Sales?",
+    "facts": {
+      "preset": "staff_basic",
+      "page_tab": "email"
+    },
+    "expect": {
+      "actions": [
+        "people_query"
+      ],
+      "areas": [
+        "hr"
+      ],
+      "not_actions": [
+        "directory_lookup",
+        "hr_process_read"
+      ],
+      "fields": {
+        "department": "Sales"
+      }
+    }
+  },
+  {
+    "id": "tab_context-en-2",
+    "language": "en",
+    "message": "Send an email to aina.rahman@example.com saying the report is ready",
+    "facts": {
+      "preset": "staff_basic",
+      "page_tab": "hr"
+    },
+    "expect": {
+      "actions": [
+        "email_compose"
+      ],
+      "areas": [
+        "email"
+      ],
+      "send": true,
+      "recipient": "aina.rahman@example.com"
+    }
+  },
+  {
+    "id": "inbox_decision-en-1",
+    "language": "en",
+    "message": "Approve this reply",
+    "facts": {
+      "preset": "staff_basic",
+      "page_tab": "inbox",
+      "record": {
+        "kind": "conversation",
+        "id": "7a1c9e30-5d2b-4f60-8a41-2b9c0d3e5f01"
+      },
+      "record_summary": "Customer conversation 7a1c9e30-5d2b-4f60-8a41-2b9c0d3e5f01: status open, inbox_version 3; pending held reply approvals: approval 41 (status pending)."
+    },
+    "expect": {
+      "actions": [
+        "inbox_decision"
+      ],
+      "areas": [
+        "inbox"
+      ],
+      "not_actions": [
+        "answer",
+        "clarification"
+      ],
+      "fields": {
+        "decision": "approve"
+      }
+    }
+  },
+  {
+    "id": "inbox_decision-ms-1",
+    "language": "ms",
+    "message": "Tolak balasan ini",
+    "facts": {
+      "preset": "staff_basic",
+      "page_tab": "inbox",
+      "record": {
+        "kind": "conversation",
+        "id": "7a1c9e30-5d2b-4f60-8a41-2b9c0d3e5f01"
+      },
+      "record_summary": "Customer conversation 7a1c9e30-5d2b-4f60-8a41-2b9c0d3e5f01: status open, inbox_version 3; pending held reply approvals: approval 41 (status pending)."
+    },
+    "expect": {
+      "actions": [
+        "inbox_decision"
+      ],
+      "areas": [
+        "inbox"
+      ],
+      "not_actions": [
+        "answer",
+        "clarification"
+      ],
+      "fields": {
+        "decision": "reject"
+      }
+    }
+  },
+  {
+    "id": "product_stock-en-1",
+    "language": "en",
+    "message": "How many of these do we have left?",
+    "facts": {
+      "preset": "staff_business",
+      "page_tab": "business",
+      "record": {
+        "kind": "product",
+        "id": "3b8e6f12-9c4d-4a75-b0e2-6d1f7a8c9e02"
+      },
+      "record_summary": "TikTok Shop product “Synthetic Blue Mug” (listing 3b8e6f12-9c4d-4a75-b0e2-6d1f7a8c9e02): 2 variants, 14 in stock in our copy, synced 3 minutes ago."
+    },
+    "expect": {
+      "actions": [
+        "product_stock_read"
+      ],
+      "areas": [
+        "products"
+      ],
+      "not_actions": [
+        "answer",
+        "clarification"
+      ]
+    }
+  },
+  {
+    "id": "product_stock-ms-1",
+    "language": "ms",
+    "message": "Berapa banyak lagi stok yang kita ada untuk produk ini?",
+    "facts": {
+      "preset": "staff_business",
+      "page_tab": "business",
+      "record": {
+        "kind": "product",
+        "id": "3b8e6f12-9c4d-4a75-b0e2-6d1f7a8c9e02"
+      },
+      "record_summary": "TikTok Shop product “Synthetic Blue Mug” (listing 3b8e6f12-9c4d-4a75-b0e2-6d1f7a8c9e02): 2 variants, 14 in stock in our copy, synced 3 minutes ago."
+    },
+    "expect": {
+      "actions": [
+        "product_stock_read"
+      ],
+      "areas": [
+        "products"
+      ],
+      "not_actions": [
+        "answer",
+        "clarification"
+      ]
+    }
+  },
+  {
+    "id": "training_ask-en-2",
+    "language": "en",
+    "message": "What does this video say about exits?",
+    "facts": {
+      "preset": "staff_training",
+      "page_tab": "training_library",
+      "record": {
+        "kind": "training_item",
+        "id": "c4d5e6f7-1a2b-4c3d-8e9f-0a1b2c3d4e03"
+      },
+      "record_summary": "Training video c4d5e6f7-1a2b-4c3d-8e9f-0a1b2c3d4e03: “Synthetic Fire Safety Basics”, length 04:32, transcript yes."
+    },
+    "expect": {
+      "actions": [
+        "training_ask"
+      ],
+      "areas": [
+        "training"
+      ],
+      "not_actions": [
+        "training_submit",
+        "clarification"
+      ]
+    }
+  },
+  {
+    "id": "training_ask-ms-2",
+    "language": "ms",
+    "message": "Apa yang video ini cakap tentang pintu keluar?",
+    "facts": {
+      "preset": "staff_training",
+      "page_tab": "training_library",
+      "record": {
+        "kind": "training_item",
+        "id": "c4d5e6f7-1a2b-4c3d-8e9f-0a1b2c3d4e03"
+      },
+      "record_summary": "Training video c4d5e6f7-1a2b-4c3d-8e9f-0a1b2c3d4e03: “Synthetic Fire Safety Basics”, length 04:32, transcript yes."
+    },
+    "expect": {
+      "actions": [
+        "training_ask"
+      ],
+      "areas": [
+        "training"
+      ],
+      "not_actions": [
+        "training_submit",
+        "clarification"
+      ]
+    }
+  },
+  {
+    "id": "no_area-en-1",
+    "language": "en",
+    "message": "What is the capital of France?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "answer",
+        "clarification"
+      ],
+      "areas": []
+    }
+  },
+  {
+    "id": "no_area-ms-1",
+    "language": "ms",
+    "message": "Apa nama ibu negara Perancis?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "answer",
+        "clarification"
+      ],
+      "areas": []
+    }
+  },
+  {
+    "id": "scoped_answer-en-1",
+    "language": "en",
+    "message": "Email my team that the stocktake is on Friday",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "areas": [
+        "email"
+      ],
+      "not_actions": [
+        "email_team",
+        "email_compose"
+      ]
+    }
+  },
+  {
+    "id": "scoped_answer-en-2",
+    "language": "en",
+    "message": "Please approve the held reply on this conversation",
+    "facts": {
+      "preset": "staff_basic",
+      "page_tab": "inbox",
+      "record": {
+        "kind": "conversation",
+        "id": "7a1c9e30-5d2b-4f60-8a41-2b9c0d3e5f01"
+      },
+      "record_summary": "Customer conversation 7a1c9e30-5d2b-4f60-8a41-2b9c0d3e5f01: status open, inbox_version 3; no pending held reply approval."
+    },
+    "expect": {
+      "actions": [
+        "answer",
+        "clarification"
+      ],
+      "areas": [
+        "inbox"
+      ],
+      "not_actions": [
+        "inbox_decision"
+      ]
+    }
+  },
+  {
+    "id": "scoped_answer-en-3",
+    "language": "en",
+    "message": "I would like to request a leadership workshop",
+    "facts": {
+      "preset": "staff_unlinked"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "areas": [
+        "training"
+      ],
+      "not_actions": [
+        "training_submit"
+      ]
+    }
+  },
+  {
+    "id": "scoped_answer-en-4",
+    "language": "en",
+    "message": "Mark Razak as leaving, last day 20 December 2026, he resigned",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "areas": [
+        "hr"
+      ],
+      "not_actions": [
+        "hr_person_leave"
+      ]
+    }
+  },
+  {
+    "id": "scoped_answer-ms-1",
+    "language": "ms",
+    "message": "Tandakan Razak akan berhenti, hari terakhir 20 Disember 2026, dia letak jawatan",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "areas": [
+        "hr"
+      ],
+      "not_actions": [
+        "hr_person_leave"
+      ]
+    }
+  },
+  {
+    "id": "scoped_answer-en-5",
+    "language": "en",
+    "message": "Is Room A free tomorrow?",
+    "facts": {
+      "preset": "staff_basic"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "areas": [
+        "bookings"
+      ],
+      "not_actions": [
+        "booking_action"
+      ]
+    }
+  },
+  {
+    "id": "scoped_answer-en-6",
+    "language": "en",
+    "message": "Please cancel order 1042 on TikTok Shop and refund the customer",
+    "facts": {
+      "preset": "staff_business"
+    },
+    "expect": {
+      "actions": [
+        "answer"
+      ],
+      "areas": [
+        "products"
+      ],
+      "not_actions": [
+        "product_stock_read"
+      ]
+    }
+  },
+  {
+    "id": "hr_date-en-1",
+    "language": "en",
+    "message": "Aina is leaving, her last day is this Friday, she resigned",
+    "facts": {
+      "preset": "hr_people_manager_bookings"
+    },
+    "expect": {
+      "actions": [
+        "hr_person_leave"
+      ],
+      "areas": [
+        "hr"
+      ],
+      "fields": {
+        "last_day": "2026-11-06",
+        "reason": "resigned"
+      }
+    }
   }
 ]

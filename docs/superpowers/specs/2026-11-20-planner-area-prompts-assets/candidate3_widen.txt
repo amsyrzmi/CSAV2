@@ -1,0 +1,138 @@
+RATE navigate-en-1 5/5
+RATE navigate-ms-1 5/5
+RATE navigate-en-2 5/5
+RATE navigate-ms-2 5/5
+RATE navigate-ms-3 5/5
+RATE navigate-en-3 5/5
+RATE navigate-ms-4 5/5
+RATE navigate-en-4 5/5
+RATE navigate-ms-5 5/5
+RATE navigate-en-5 5/5
+RATE navigate-ms-6 5/5
+RATE answer-en-1 5/5
+RATE answer-ms-1 5/5
+RATE directory-en-1 5/5
+RATE directory-ms-1 5/5
+RATE directory-en-2 5/5
+RATE directory-ms-2 5/5
+RATE directory-en-3 5/5
+RATE directory-ms-3 5/5
+RATE directory-en-4 5/5
+RATE directory-ms-4 5/5
+RATE compose-en-1 5/5
+RATE compose-ms-1 5/5
+RATE compose-en-2 5/5
+RATE compose-ms-2 5/5
+RATE compose-en-3 5/5
+RATE compose-ms-3 5/5
+RATE draft-en-1 5/5
+RATE draft-ms-1 5/5
+RATE reply-en-1 5/5
+RATE reply-ms-1 5/5
+RATE team-en-1 5/5
+RATE team-ms-1 5/5
+RATE attention-en-1 5/5
+RATE attention-ms-1 5/5
+RATE training-en-1 5/5
+RATE training-ms-1 5/5
+RATE training-en-2 5/5
+RATE training-ms-2 5/5
+RATE training-ms-3 5/5
+RATE training-en-3 5/5
+RATE training_ask-en-1 5/5
+RATE training_ask-ms-1 5/5
+RATE dont_send-en-1 5/5
+RATE dont_send-ms-1 5/5
+RATE hr_add-en-1 5/5
+RATE hr_add-ms-1 5/5
+RATE hr_add-en-2 5/5
+RATE hr_update-en-1 5/5
+RATE hr_update-ms-1 5/5
+RATE hr_leave-en-1 5/5
+RATE hr_leave-ms-1 5/5
+RATE people_query-en-1 5/5
+RATE people_query-ms-1 5/5
+RATE hr_open-en-1 5/5
+RATE hr_open-ms-1 5/5
+RATE booking_book-en-1 5/5
+RATE booking_book-ms-1 5/5
+RATE booking_book-en-2 5/5
+RATE booking_move-en-1 5/5
+FAIL booking_move-ms-1 action=invalid_output contract replanned
+RATE booking_move-ms-1 4/5
+RATE booking_cancel-en-1 5/5
+RATE booking_cancel-ms-1 5/5
+RATE booking_free-en-1 5/5
+RATE booking_free-ms-1 5/5
+RATE booking_move-ms-2 5/5
+RATE booking_free-en-2 5/5
+RATE email_batch-en-1 5/5
+FAIL email_batch-ms-1 action=clarification actions fields
+FAIL email_batch-ms-1 action=clarification actions fields
+RATE email_batch-ms-1 3/5
+RATE email_batch_group-en-1 5/5
+RATE email_batch_group-ms-1 5/5
+FAIL email_batch_rest-en-1 action=clarification actions
+RATE email_batch_rest-en-1 4/5
+FAIL email_batch_rest-ms-1 action=clarification actions
+RATE email_batch_rest-ms-1 4/5
+RATE plan_bookings-en-1 5/5
+RATE plan_bookings-ms-1 5/5
+FAIL hr_process-en-1 action=answer actions fields
+FAIL hr_process-en-1 action=answer actions fields
+RATE hr_process-en-1 3/5
+RATE hr_process-ms-1 5/5
+RATE hr_process-en-2 5/5
+RATE hr_process-ms-2 5/5
+RATE hr_process-en-3 5/5
+FAIL hr_process-ms-3 action=answer actions fields
+RATE hr_process-ms-3 4/5
+RATE hr_process-en-4 5/5
+RATE hr_process-ms-4 5/5
+RATE hr_process-en-5 5/5
+RATE hr_process-ms-5 5/5
+RATE hr_process_neg-en-1 5/5
+RATE hr_process_neg-ms-1 5/5
+RATE hr_process_neg-en-2 5/5
+RATE hr_process_neg-ms-2 5/5
+RATE hr_process_neg-en-3 5/5
+RATE hr_process_neg-ms-3 5/5
+RATE hr_process_neg-en-4 5/5
+RATE hr_process_neg-ms-4 5/5
+RATE hr_process_neg-en-5 5/5
+FAIL hr_process_neg-ms-5 action=clarification actions
+FAIL hr_process_neg-ms-5 action=hr_task_complete actions not_actions
+FAIL hr_process_neg-ms-5 action=hr_task_complete actions not_actions
+FAIL hr_process_neg-ms-5 action=hr_task_complete actions not_actions
+RATE hr_process_neg-ms-5 1/5
+RATE hr_task-en-1 5/5
+RATE hr_task-ms-1 5/5
+RATE hr_task-en-2 5/5
+RATE hr_task-ms-2 5/5
+RATE cross_area-en-1 5/5
+RATE cross_area-ms-1 5/5
+RATE cross_area-en-2 5/5
+RATE cross_area-ms-2 5/5
+RATE cross_area-en-3 5/5
+RATE follow_up-en-1 5/5
+RATE follow_up-ms-1 5/5
+RATE follow_up-en-2 5/5
+RATE tab_context-en-1 5/5
+RATE tab_context-ms-1 5/5
+RATE tab_context-en-2 5/5
+RATE inbox_decision-en-1 5/5
+RATE inbox_decision-ms-1 5/5
+RATE product_stock-en-1 5/5
+RATE product_stock-ms-1 5/5
+RATE training_ask-en-2 5/5
+RATE training_ask-ms-2 5/5
+RATE no_area-en-1 5/5
+RATE no_area-ms-1 5/5
+RATE scoped_answer-en-1 5/5
+RATE scoped_answer-en-2 5/5
+RATE scoped_answer-en-3 5/5
+RATE scoped_answer-en-4 5/5
+RATE scoped_answer-ms-1 5/5
+RATE scoped_answer-en-5 5/5
+RATE scoped_answer-en-6 5/5
+613 passed, 12 failed

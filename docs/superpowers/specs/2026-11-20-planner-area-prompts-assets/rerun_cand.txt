@@ -1,0 +1,21 @@
+FAIL hr_process-ms-3 action=answer actions fields
+FAIL hr_process-ms-3 action=answer actions fields
+FAIL hr_process-ms-3 action=answer actions fields
+FAIL hr_process-ms-3 action=answer actions fields
+FAIL hr_process-ms-3 action=answer actions fields
+RATE hr_process-ms-3 5/10
+FAIL hr_process_neg-en-5 action=hr_task_complete actions not_actions
+FAIL hr_process_neg-en-5 action=hr_task_complete actions not_actions
+FAIL hr_process_neg-en-5 action=hr_task_complete actions not_actions
+FAIL hr_process_neg-en-5 action=hr_task_complete actions not_actions
+FAIL hr_process_neg-en-5 action=hr_task_complete actions not_actions
+FAIL hr_process_neg-en-5 action=hr_task_complete actions not_actions
+FAIL hr_process_neg-en-5 action=hr_task_complete actions not_actions
+FAIL hr_process_neg-en-5 action=hr_task_complete actions not_actions
+FAIL hr_process_neg-en-5 action=hr_task_complete actions not_actions
+FAIL hr_process_neg-en-5 action=hr_task_complete actions not_actions
+RATE hr_process_neg-en-5 0/10
+FAIL product_stock-en-1 action=answer actions not_actions
+FAIL product_stock-en-1 action=answer actions not_actions
+RATE product_stock-en-1 8/10
+13 passed, 17 failed

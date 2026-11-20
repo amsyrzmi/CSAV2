@@ -190,6 +190,8 @@ def create_app() -> FastAPI:
             app.state.training_video_enabled = settings.TRAINING_VIDEO_ENABLED
             # The HR create-defaults action: while off its route answers 404.
             app.state.hr_default_templates_enabled = settings.HR_DEFAULT_TEMPLATES_ENABLED
+            # The workspace planner's scoped prompts: while off every turn uses the full prompt.
+            app.state.workspace_area_prompts = settings.WORKSPACE_AREA_PROMPTS
             # Read-only knowledge base search for batch drafts; None leaves that source off.
             app.state.kb_embedder = _kb_embedder(settings)
             # One Jev client for every decider, only with a key; without one every area runs on
