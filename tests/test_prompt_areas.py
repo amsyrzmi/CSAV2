@@ -62,3 +62,10 @@ def test_bullets_cover_the_prose_exactly() -> None:
     golden = _golden()
     prose = golden[golden.index("\nFacts:\n") + len("\nFacts:\n") :]
     assert "\n".join(bullet.text for bullet in BULLETS) + "\n" == prose
+
+
+def test_the_history_continuation_rule_is_in_every_scoped_prompt() -> None:
+    rule = "continue the original request from history instead of starting over."
+    assert any(rule in bullet.text and "general" in bullet.areas for bullet in BULLETS)
+    for area in AREAS:
+        assert rule in build_prompt(_schema(), frozenset({area})), area

@@ -414,7 +414,7 @@ BULLETS: tuple[Bullet, ...] = (
             '- When the message picks a colleague ("Use employee <id> ...") or answers a '
             "question, continue the original request from history instead of starting over."
         ),
-        _a("email"),
+        _a("general"),
     ),
     Bullet(
         (
