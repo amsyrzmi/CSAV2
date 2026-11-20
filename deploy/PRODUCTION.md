@@ -1041,6 +1041,23 @@ Never roll production back past 2a once 2b has run there: an older delivery proc
 picture message's caption as plain text, and an older worker fails a saved conversation turn that
 carries a picture. Fix forward instead.
 
+## Planner area prompts
+
+The staff assistant can plan each turn with a prompt scoped to the areas it needs (design:
+`docs/superpowers/specs/2026-11-20-planner-area-prompts-design.md`). It is behind one optional
+switch, wired like the other staging switches:
+
+| Rollout line | Values | Default | Sets |
+| --- | --- | --- | --- |
+| `CSA_STAGING_WORKSPACE_AREA_PROMPTS` | `false`, `true` | off (unset) | the app setting `WORKSPACE_AREA_PROMPTS` on the gateway |
+
+It is declared in `scripts/rollout_targets.py` (production takes it from the same name) and passed
+through `deploy/compose.staging-local-proposal.yml` (default `false`), but it is **not set** in
+`deploy/staging-rollout.env` or `deploy/production-rollout.env`, so it is off on both. Switching it on is a separate reviewed pull
+request (staging first), after the blockers listed in the design's "Results of the build" are
+cleared. Put the line `CSA_STAGING_WORKSPACE_AREA_PROMPTS=true` in a rollout file, never
+`WORKSPACE_AREA_PROMPTS`. Setting it back to `false` (or removing the line) restores the full prompt.
+
 ## HR default templates
 
 HR PR 4 adds a run-once action that creates the Malaysian default onboarding and offboarding

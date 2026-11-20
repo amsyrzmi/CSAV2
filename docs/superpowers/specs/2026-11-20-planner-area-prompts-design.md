@@ -82,8 +82,7 @@ function. Signals, unioned (it errs on including more):
 If no signal fires, the selector returns None and the full prompt (today's) is used. A scoped prompt
 is general plus the union of the selected areas. A selected set of two or more areas is allowed and
 normal (the cross-area case "email Aina about her leave" selects email and hr). Fact payloads and
-fact bullets follow the selected areas too: the always-present bookings clock is sent only when
-bookings is selected.
+fact bullets follow the selected areas too. The always-present bookings clock is the exception: it is the model's only date, so it is sent whenever any area is selected (only the prose is scoped, so a relative date on an HR turn still knows today).
 
 ### Phase B: the routing decider (Jev), in this project
 
@@ -326,15 +325,33 @@ experiments of 5 to 10 samples. No sixth full run.
 - The weak-approve suppression has gaps (reviewer probes): "approve Razak's reply about the onboarding
   task" selects `{email, hr}` without inbox, and with the inbox tab open, or through the previous-message
   pass, "approve Aina's laptop task" selects inbox again (the combination that scored 0/5 in the
-  forced-area experiment). The widening net and the tab and record signals cover the first case, not the
-  second.
+  forced-area experiment). The tab and record signals cover the first case, not the second. Widening
+  covers neither: both selections are valid and in-area, so nothing widens.
 - The weak who-is rule is lost when any other word matches: "who is the customer Razak" selects only
-  inbox and "who is Danial in HR" only hr (`directory_lookup` is email-only); widening, when on, covers
-  recall.
+  inbox and "who is Danial in HR" only hr (`directory_lookup` is email-only). Widening does not cover
+  these in-area misses: when the model follows a too-narrow schema it answers or clarifies in-area, and
+  0 of 625 samples widened shows the model follows the schema it is shown. Recall therefore depends on
+  the selector and on the scoped-turn log (below).
 - Widening also happens on a `resolve` refusal; that is outside the gate and is a ruling.
-- Nothing logs a widen yet. The switch-on PR should add it, so the live widened share can be read
-  against the 10% ceiling.
+- Each scoped turn now logs one content-free line, `workspace_scoped_turn` (selected areas, widen
+  cause `none`, `out_of_area` or `invalid_output`, and the final action; no text, no ids), so the live
+  widened share can be read against the 10% ceiling and an in-area miss can be audited.
 - Phase B (the decider's area questions) is not built; the planner gate does not measure it.
+
+### Blockers for the switch-on PR
+
+1. Residual selector recall (final review, I1): communication, stock and calendar phrasings that
+   the 125 cases do not contain ("write to Danial about the delay", "let Aina know ...", "set up a
+   call ...", "how many blue mugs do we have" on another tab). The gate's 0 misses holds by
+   construction on those 125 cases; tight words were added afterwards (no measured case changed its
+   selected set), but other phrasings may still be missed, and widening cannot see an in-area miss.
+2. Changed after the gate, not measured: the company's clock now travels on every scoped turn
+   (final review, I2), and the new smoke case `hr_date-en-1` was added after the gate and has never
+   been run. One confirm smoke run is needed before switch-on, which needs the owner's yes.
+3. Staging switch-on must watch the `workspace_scoped_turn` log (areas, widen cause, final action)
+   to audit in-area misses, not only the widened share.
+4. The products plus inbox companion and the weak-word rules (approve, who is) were tuned on
+   5-to-10-sample evidence; treat them as measured perturbation fixes, not proven ones.
 
 ### Owner decisions still open
 

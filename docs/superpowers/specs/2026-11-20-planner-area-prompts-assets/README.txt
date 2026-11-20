@@ -16,6 +16,10 @@ rerun_base.txt       Three cases (hr_process-ms-3, hr_process_neg-en-5, product_
 rerun_cand.txt       The same three cases at --repeat 10 with `--areas --no-widen` (commit 463e4527, inferred from
                      timing: the pair ran after run 2 and before 36810e8e at 13:50).
 
+These files measure the selector and prompts as of commit df4a01f8 on the 125 cases above. Later
+changes (the clock on every scoped turn, extra selector words, the case hr_date-en-1) are not measured
+by them.
+
 Compare any pair with:  python -m scripts.smoke_compare <baseline file> <candidate file>
 
 Note on the files: they hold only FAIL lines, RATE lines and the final total; PASS lines were filtered out
