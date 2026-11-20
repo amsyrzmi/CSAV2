@@ -128,6 +128,14 @@ forbidden_modules = [
     "csa.hr",
 ]
 
+[[tool.importlinter.contracts]]
+name = "csa.notify never imports the Inbox (the apps inject the overdue re-check)"
+type = "forbidden"
+source_modules = ["csa.notify"]
+forbidden_modules = ["csa.inbox_queue"]
+# csa.notify.sender reaches it through csa.approval.service, which is not this contract's concern.
+allow_indirect_imports = true
+
 [dependency-groups]
 dev = [
     "coverage==7.10.7",

@@ -60,6 +60,8 @@ from tests.test_inbox_queue_triggers import (
 from tests.test_training_schema import _company
 
 PARAM_KEYS = {"conversation_id", "customer", "priority", "waited_minutes", "repeat"}
+CHAT_KEYS = PARAM_KEYS | {"cycle"}
+"""The staff-chat payload adds the wait's start (ISO time), so a held alert can be re-checked."""
 QUIET = {"start": "22:00", "end": "07:00", "tz": "UTC"}
 
 
@@ -286,7 +288,9 @@ async def test_scenario_4_overdue_reaches_the_team_repeats_and_the_last_adds_the
         chat = _chat(migrated_dsn, t.client_id)
         assert len(chat) == number
         assert chat[-1]["event"] == "inbox.overdue" and chat[-1]["priority"] == priority
-        assert chat[-1]["payload"] == expected
+        # The chat payload is the console params plus the cycle: the wait's start as an ISO time.
+        assert chat[-1]["payload"] == {**expected, "cycle": since.isoformat()}
+        assert datetime.fromisoformat(chat[-1]["payload"]["cycle"]) == since
         state = _reminder(migrated_dsn, t.client_id, "inbox.overdue", s)
         assert state["fire_count"] == number
         if number < 4:
@@ -547,8 +551,11 @@ async def test_no_message_text_reaches_a_console_row_or_the_chat(
     rows = _console(migrated_dsn, t.client_id, "inbox.overdue")
     chat = _chat(migrated_dsn, t.client_id)
     assert rows and chat
-    for params in [r["params"] for r in rows] + [c["payload"] for c in chat]:
-        assert set(params) <= PARAM_KEYS
+    for params in [r["params"] for r in rows]:
+        assert set(params) <= PARAM_KEYS  # the console row never carries the cycle
+        assert "Synthetic question" not in json.dumps(params)
+    for params in [c["payload"] for c in chat]:
+        assert set(params) <= CHAT_KEYS
         assert "Synthetic question" not in json.dumps(params)
 
 

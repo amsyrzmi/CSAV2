@@ -230,6 +230,18 @@ test("Password opens the in-shell page: /password for platform admins, /portal/p
   }
 });
 
+test("Notifications is shown to every role, beside Team and Password: /notifications for platform admins, /portal/notifications for tenant roles", () => {
+  const admin = navigationFor({ ...staff, role: "platform_admin" }, []);
+  assert.deepEqual(admin.find((l) => l.key === "notifications"), { href: "/notifications", label: "Notifications", key: "notifications" });
+  for (const role of ["tenant_admin", "tenant_staff", "read_only"]) {
+    const links = navigationFor({ ...staff, role }, []);
+    const link = links.find((l) => l.key === "notifications");
+    assert.deepEqual(link, { href: "/portal/notifications", label: "Notifications", key: "notifications" }, role);
+  }
+  const keys = navigationFor({ ...staff, role: "tenant_admin" }, []).map((l) => l.key);
+  assert.deepEqual(keys.slice(-4), ["team", "credit", "notifications", "password"]);
+});
+
 test("the Sandbox assistant entry is gone for every role: Overview is the assistant home", () => {
   const all = active("customer_support", "hr", "staff_email", "orders_products", "subscriptions");
   for (const role of ["platform_admin", "tenant_admin", "tenant_staff", "read_only"]) {
@@ -272,15 +284,15 @@ test("children never add a top-level key", () => {
   const keys = new Set();
   for (const role of ["platform_admin", "tenant_admin", "tenant_staff", "read_only"])
     for (const l of navigationFor({ ...staff, role }, all)) keys.add(l.key);
-  // 19 since Payments, Credit and Billing joined.
-  assert.equal(keys.size, 19);
+  // 20 since Notifications joined.
+  assert.equal(keys.size, 20);
 });
 
 test("child literals are href-first so the contract regex never reads them", async () => {
   const source = await readFile(new URL("../lib/navigation.ts", import.meta.url), "utf8");
   const keys = [...source.matchAll(/\{ key: "(\w+)", label: "([^"]+)"/g)].map((m) => m[1]).sort();
   assert.deepEqual(keys, [
-    "activity", "billing", "bookings", "business", "connections", "credit", "email", "hr", "inbox", "knowledge_base", "members", "overview",
+    "activity", "billing", "bookings", "business", "connections", "credit", "email", "hr", "inbox", "knowledge_base", "members", "notifications", "overview",
     "password", "payments", "services", "subscriptions", "team", "tenants", "training_library",
   ]);
 });

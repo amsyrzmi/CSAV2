@@ -8,6 +8,9 @@ const adoptedPages = new Set([
   "/change-password",
   "/password",
   "/portal/password",
+  // Where alerts go and the Inbox timing; every member opens it, the page and the API gate the controls.
+  "/notifications",
+  "/portal/notifications",
   "/settings/clients",
   "/settings/team",
   "/portal",

@@ -150,8 +150,15 @@ Reserved ranges (client growth program, 2026-10-27):
   `staff_notification_targets.language` (`en` or `ms`, default `en`: the language of the staff-chat
   message) and appends `inbox.overdue` to the events of every enabled target that lacks it (the
   `events` column default is not changed, `tests/test_bookings_bot_schema.py` pins it; a chat
-  connected later opts in on PR 3's targets page). The per-person notification preferences of PR 3
-  move to 0626. Later numbers are listed as they ship.
+  connected later opts in on PR 3's targets page); 0626 adds `console_notification_prefs` (one row
+  per person, written only when they save: email on or off, the six inbox kinds, the priority
+  floor, a once-per-episode failure flag) and `console_email_outbox` (the person email queue, one
+  row per notification, `notification_id` unique and not a foreign key), both with tenant row
+  security, the columns `staff_notification_targets.failure_notified_at` and `version` (the edit
+  counter) and `staff_notifications.held_at` (quiet-hours hold), the `cancelled` staff
+  notification status (the live constraint is read and extended, as 0531 does), and the SECURITY
+  DEFINER lookup `console_member_emails` (EXECUTE to `csa_app` only). Later numbers are listed as
+  they ship.
 
 A migration that rebuilds `console_proposals_kind_check` or `console_workspace_turns_action_check`
 (the assistant's proposal kinds and turn actions) must be numbered above 0531, or must read the
