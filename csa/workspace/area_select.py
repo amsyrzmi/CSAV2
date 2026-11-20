@@ -144,9 +144,14 @@ def select_areas(
     record_kind: str | None,
     previous: PriorTurn | None,
     needs: Needs,
+    routed: frozenset[Area] = frozenset(),
 ) -> frozenset[Area] | None:
-    """The union of every signal, or ``None`` when none fires (the caller uses the full prompt)."""
-    found: set[Area] = set()
+    """The union of every signal, or ``None`` when none fires (the caller uses the full prompt).
+
+    ``routed`` is the routing decider's area answers (phase B): they join the union before the
+    products-only companion rule, so a decided ``products`` alone gets the same companion.
+    """
+    found: set[Area] = set(routed)
     if tab is not None:
         found |= _TAB_AREAS.get(tab, frozenset())
     if record_kind is not None:

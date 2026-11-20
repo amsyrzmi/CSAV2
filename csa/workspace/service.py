@@ -57,7 +57,7 @@ from csa.metering.context import MeterContext, meter_context
 from csa.training import ask as training_ask
 from csa.training.access import can_manage
 from csa.workspace import email_batch, hr_people, hr_processes, hr_task_card, stock
-from csa.workspace.area_select import select_areas
+from csa.workspace.area_select import select_areas, word_rule_areas
 from csa.workspace.contracts import (
     MAX_STEPS,
     MAX_WORK_TTL,
@@ -1287,13 +1287,15 @@ async def planner_facts(
     history = _prior_turns(rows, turn.body)
     previous = _split_stored(rows[0]["result"])[1] if rows else None
     offered = history[-1].offered_options if history else []
-    needs = await route_facts(
+    routed = await route_facts(
         getattr(request.app.state, "routing_decider", None),
         turn.body,
         fallback=word_rule_needs(turn.body),
+        area_fallback=word_rule_areas(turn.body),
         trace_id=turn.request_key,
         client_id=client_id,
     )
+    needs = routed.needs
     manager = None
     if needs.manager:
         manager = await _my_manager(request, actor, client_id, packages)
@@ -1322,6 +1324,7 @@ async def planner_facts(
             record_kind=context.record.kind if context and context.record else None,
             previous=history[-1] if history else None,
             needs=needs,
+            routed=routed.areas,
         )
     return PlannerFacts(
         role=actor.role,

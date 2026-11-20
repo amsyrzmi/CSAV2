@@ -8,16 +8,23 @@ per question, falling back to the word rules below it). The result per group is 
 OR the word rules': Jev can only add a read, never remove one the words would make, because an
 extra read is harmless and a missing one gives a wrong "no access" or "not available". The caller
 computes the word-rule ``Needs`` and passes it in: this module never imports the service.
+
+The same request also asks one yes/no question per prompt area (``needs:area:<area>``, phase B of
+the planner-area-prompts design). The result per area is the decided answer OR the word-rule
+areas the caller passes in (``area_fallback``), so Jev can only add an area to the prompt's
+selection, never remove one. ``area_select`` imports this module for ``Needs``, so the word-rule
+areas come in from the caller and nothing here imports ``area_select``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, get_args
 from uuid import UUID
 
 from csa.decide.deciders import Decider
+from csa.workspace.prompt_areas import Area
 
 FACT_GROUPS = ("manager", "mail", "team", "training", "people")
 
@@ -33,6 +40,31 @@ _DESCRIPTIONS = {
 }
 
 
+AREA_NAMES: tuple[Area, ...] = get_args(Area)
+
+_AREA_DESCRIPTIONS: dict[Area, str] = {
+    "email": (
+        "email: writing, replying to or sending a message, looking up a person to email, "
+        "the mailbox or an inbox summary"
+    ),
+    "inbox": "the inbox of held customer replies: approving or rejecting a held reply",
+    "training": "training: a training course, a training request or a training video",
+    "hr": ("HR: people records, onboarding or offboarding, leave, or an HR process or its tasks"),
+    "bookings": (
+        "bookings: booking, moving or cancelling a meeting or appointment, or finding free times"
+    ),
+    "products": "TikTok Shop products, orders or stock",
+}
+
+AREA_QUESTIONS: dict[str, dict[str, Any]] = {
+    f"needs:area:{area}": {
+        "type": "noul",
+        "instructions": f"Does `message` need {_AREA_DESCRIPTIONS[area]}?",
+    }
+    for area in AREA_NAMES
+}
+
+
 @dataclass(frozen=True)
 class Needs:
     manager: bool
@@ -42,24 +74,40 @@ class Needs:
     people: bool
 
 
+@dataclass(frozen=True)
+class RoutedNeeds:
+    """What one routing request decided: the fact reads and the prompt areas Jev wants added."""
+
+    needs: Needs
+    areas: frozenset[Area]
+
+
 def routing_questions() -> dict[str, dict[str, Any]]:
-    return {
+    """The five fact questions then the six area questions: one request, eleven answers."""
+    facts: dict[str, dict[str, Any]] = {
         f"needs:{group}": {
             "type": "noul",
             "instructions": f"Does `message` need {_DESCRIPTIONS[group]}?",
         }
         for group in FACT_GROUPS
     }
+    return facts | AREA_QUESTIONS
 
 
-def _from_answers(answers: Mapping[str, Any], fallback: Needs) -> Needs:
-    """Decided answer OR word rule, per group: Jev can add a read, never drop one."""
-    return Needs(
+def _from_answers(
+    answers: Mapping[str, Any], fallback: Needs, area_fallback: frozenset[Area]
+) -> RoutedNeeds:
+    """Decided answer OR word rule, per question: Jev can add a read or an area, never drop one."""
+    needs = Needs(
         **{
             group: bool(answers[f"needs:{group}"]) or getattr(fallback, group)
             for group in FACT_GROUPS
         }
     )
+    areas: frozenset[Area] = frozenset(
+        area for area in AREA_NAMES if bool(answers[f"needs:area:{area}"]) or area in area_fallback
+    )
+    return RoutedNeeds(needs=needs, areas=areas)
 
 
 async def route_facts(
@@ -67,19 +115,27 @@ async def route_facts(
     body: str,
     *,
     fallback: Needs,
+    area_fallback: frozenset[Area] = frozenset(),
     trace_id: UUID,
     client_id: UUID,
-) -> Needs:
-    """The reads this message needs: each group decided OR in ``fallback`` (no decider: that).
+) -> RoutedNeeds:
+    """The reads and areas this message needs: each decided OR in the word rules' answer.
+
+    ``fallback`` is the word-rule ``Needs`` and ``area_fallback`` the word-rule areas (no
+    decider: exactly those). The area answers only widen the planner prompt's selection.
 
     A Jev error or timeout never reaches here (the decider falls back). The fallback is always
     complete, so ``FallbackAnswerError`` only means a bug and propagates as a server error.
     """
     if decider is None:
-        return fallback
+        return RoutedNeeds(needs=fallback, areas=area_fallback)
 
     async def word_rules() -> dict[str, object]:
-        return {f"needs:{group}": getattr(fallback, group) for group in FACT_GROUPS}
+        answers: dict[str, object] = {
+            f"needs:{group}": getattr(fallback, group) for group in FACT_GROUPS
+        }
+        answers |= {f"needs:area:{area}": area in area_fallback for area in AREA_NAMES}
+        return answers
 
     decided = await decider.decide(
         {"message": body},
@@ -88,4 +144,4 @@ async def route_facts(
         trace_id=trace_id,
         client_id=client_id,
     )
-    return _from_answers(decided.answers, fallback)
+    return _from_answers(decided.answers, fallback, area_fallback)

@@ -213,7 +213,7 @@ both; `cascade` lets Jev decide each question at or above its floor. An explicit
 and never reaches the user.
 
 The floors are per question **type** and global: `ASSISTANT_JEV_FLOOR_NOUL` applies to every yes/no
-question in every area (the routing groups, the email decider's `needs:subscription`, `needs:kb`
+question in every area (the routing groups and the six prompt-area questions `needs:area:*`, the email decider's `needs:subscription`, `needs:kb`
 and `send`, and the injection check), and `ASSISTANT_JEV_FLOOR_CHOICE` to every choice question
 (today only the email decider's `mode`). Raising one to fix one area raises it for all of them.
 

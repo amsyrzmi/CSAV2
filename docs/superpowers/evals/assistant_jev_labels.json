@@ -13,7 +13,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -28,7 +34,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -43,7 +55,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -58,7 +76,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -73,7 +97,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -88,7 +118,13 @@
     "needs:mail": false,
     "needs:team": true,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -103,7 +139,13 @@
     "needs:mail": false,
     "needs:team": true,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -118,7 +160,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -133,7 +181,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -148,7 +202,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -163,7 +223,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -178,7 +244,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -193,7 +265,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -208,7 +286,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -223,7 +307,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -238,7 +328,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -253,7 +349,13 @@
     "needs:mail": false,
     "needs:team": true,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -268,7 +370,13 @@
     "needs:mail": true,
     "needs:team": true,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -283,7 +391,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -298,7 +412,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -313,7 +433,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -328,7 +454,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -343,7 +475,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -358,7 +496,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -373,7 +517,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -388,7 +538,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -403,7 +559,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -418,7 +580,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -433,7 +601,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -448,7 +622,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -463,7 +643,13 @@
     "needs:mail": false,
     "needs:team": true,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -478,7 +664,13 @@
     "needs:mail": false,
     "needs:team": true,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -493,7 +685,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -508,7 +706,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -523,7 +727,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -538,7 +748,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -553,7 +769,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -568,7 +790,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -583,7 +811,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -598,7 +832,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -613,7 +853,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -628,7 +874,13 @@
     "needs:mail": false,
     "needs:team": true,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -643,7 +895,13 @@
     "needs:mail": true,
     "needs:team": true,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -658,7 +916,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -673,7 +937,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -688,7 +958,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -703,7 +979,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -718,7 +1000,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -733,7 +1021,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -748,7 +1042,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -763,7 +1063,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -778,7 +1084,13 @@
     "needs:mail": false,
     "needs:team": true,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -793,7 +1105,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -808,7 +1126,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -823,7 +1147,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1695,7 +2025,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1711,7 +2047,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1727,7 +2069,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1743,7 +2091,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1759,7 +2113,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1775,7 +2135,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1791,7 +2157,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1807,7 +2179,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1823,7 +2201,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1839,7 +2223,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1855,7 +2245,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1871,7 +2267,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1887,7 +2289,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1903,7 +2311,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1919,7 +2333,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1935,7 +2355,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1951,7 +2377,13 @@
     "needs:mail": true,
     "needs:team": true,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1967,7 +2399,13 @@
     "needs:mail": true,
     "needs:team": true,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1983,7 +2421,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -1999,7 +2443,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2015,7 +2465,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2031,7 +2487,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2047,7 +2509,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2063,7 +2531,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2079,7 +2553,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2095,7 +2575,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": true,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": true,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2111,7 +2597,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2127,7 +2619,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2143,7 +2641,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2159,7 +2663,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2175,7 +2685,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2191,7 +2707,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2207,7 +2729,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2223,7 +2751,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2239,7 +2773,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2255,7 +2795,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2271,7 +2817,13 @@
     "needs:mail": false,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": true
+    "needs:people": true,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2287,7 +2839,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2303,7 +2861,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2319,7 +2883,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2335,7 +2905,13 @@
     "needs:mail": true,
     "needs:team": false,
     "needs:training": false,
-    "needs:people": false
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
    }
   },
   {
@@ -2438,6 +3014,552 @@
     "needs:subscription": false,
     "needs:kb": false,
     "send": true
+   }
+  },
+  {
+   "id": "routing-en-26",
+   "area": "routing",
+   "language": "en",
+   "state": {
+    "message": "which customer conversations are being held for my approval?"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": true,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-en-27",
+   "area": "routing",
+   "language": "en",
+   "state": {
+    "message": "reject the held answer to the customer asking about opening hours"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": true,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-en-28",
+   "area": "routing",
+   "language": "en",
+   "state": {
+    "message": "approve all the held customer messages from today"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": true,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-en-29",
+   "area": "routing",
+   "language": "en",
+   "state": {
+    "message": "book a meeting room for Thursday at 3pm"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": true,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-en-30",
+   "area": "routing",
+   "language": "en",
+   "state": {
+    "message": "move my 2pm appointment with the supplier to Friday"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": true,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-en-31",
+   "area": "routing",
+   "language": "en",
+   "state": {
+    "message": "cancel tomorrow's meeting with Hafiz"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": true,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-en-32",
+   "area": "routing",
+   "language": "en",
+   "state": {
+    "message": "is the meeting room free on Monday morning?"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": true,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-en-33",
+   "area": "routing",
+   "language": "en",
+   "state": {
+    "message": "how many units of the blue mug are left in stock?"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": true
+   }
+  },
+  {
+   "id": "routing-en-34",
+   "area": "routing",
+   "language": "en",
+   "state": {
+    "message": "show me today's TikTok Shop orders"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": true
+   }
+  },
+  {
+   "id": "routing-en-35",
+   "area": "routing",
+   "language": "en",
+   "state": {
+    "message": "update the price of the tea set on TikTok Shop"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": true
+   }
+  },
+  {
+   "id": "routing-en-36",
+   "area": "routing",
+   "language": "en",
+   "state": {
+    "message": "approve Aina's laptop task"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-en-37",
+   "area": "routing",
+   "language": "en",
+   "state": {
+    "message": "which onboarding steps are overdue?"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-en-38",
+   "area": "routing",
+   "language": "en",
+   "state": {
+    "message": "cancel the Friday meeting and email Hafiz that it is off"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": true,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-ms-31",
+   "area": "routing",
+   "language": "ms",
+   "state": {
+    "message": "perbualan pelanggan mana yang ditahan menunggu kelulusan saya?"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": true,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-ms-32",
+   "area": "routing",
+   "language": "ms",
+   "state": {
+    "message": "tolak jawapan yang ditahan untuk pelanggan yang tanya waktu operasi"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": true,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-ms-33",
+   "area": "routing",
+   "language": "ms",
+   "state": {
+    "message": "lulus semua mesej pelanggan yang ditahan hari ini"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": true,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-ms-34",
+   "area": "routing",
+   "language": "ms",
+   "state": {
+    "message": "tempah bilik mesyuarat untuk hari Khamis pukul 3 petang"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": true,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-ms-35",
+   "area": "routing",
+   "language": "ms",
+   "state": {
+    "message": "pindahkan temujanji saya dengan pembekal ke hari Jumaat"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": true,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-ms-36",
+   "area": "routing",
+   "language": "ms",
+   "state": {
+    "message": "batalkan mesyuarat esok dengan Hafiz"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": true,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-ms-37",
+   "area": "routing",
+   "language": "ms",
+   "state": {
+    "message": "bilik mesyuarat kosong tak pagi Isnin?"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": true,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-ms-38",
+   "area": "routing",
+   "language": "ms",
+   "state": {
+    "message": "berapa unit mug biru yang tinggal dalam stok?"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": true
+   }
+  },
+  {
+   "id": "routing-ms-39",
+   "area": "routing",
+   "language": "ms",
+   "state": {
+    "message": "tunjukkan pesanan TikTok Shop hari ini"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": true
+   }
+  },
+  {
+   "id": "routing-ms-40",
+   "area": "routing",
+   "language": "ms",
+   "state": {
+    "message": "kemas kini harga set teh di TikTok Shop"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": false,
+    "needs:area:products": true
+   }
+  },
+  {
+   "id": "routing-ms-41",
+   "area": "routing",
+   "language": "ms",
+   "state": {
+    "message": "lulus tugasan komputer riba Aina"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-ms-42",
+   "area": "routing",
+   "language": "ms",
+   "state": {
+    "message": "langkah onboarding mana yang tertunggak?"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": false,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": false,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": true,
+    "needs:area:bookings": false,
+    "needs:area:products": false
+   }
+  },
+  {
+   "id": "routing-ms-43",
+   "area": "routing",
+   "language": "ms",
+   "state": {
+    "message": "eh cancel meeting Friday tu, then email Hafiz bagitau dia"
+   },
+   "expect": {
+    "needs:manager": false,
+    "needs:mail": true,
+    "needs:team": false,
+    "needs:training": false,
+    "needs:people": false,
+    "needs:area:email": true,
+    "needs:area:inbox": false,
+    "needs:area:training": false,
+    "needs:area:hr": false,
+    "needs:area:bookings": true,
+    "needs:area:products": false
    }
   }
  ]

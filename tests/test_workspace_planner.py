@@ -3729,3 +3729,44 @@ async def test_switch_on_scopes_the_prompt_to_the_selected_areas(planned) -> Non
     assert turn.status_code == 201, turn.text
     assert [system for _, system, _ in model.calls] == [scoped_prompt(frozenset({"hr"}))]
     assert '"areas"' not in model.calls[0][2]
+
+
+@requires_docker
+async def test_switch_on_merges_the_deciders_areas_with_the_selectors(planned) -> None:
+    from csa.workspace.planner import scoped_prompt
+
+    w, model = planned
+    w.app.state.workspace_area_prompts = True
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+    jev = FakeJev(_jev(areas={"hr": 0.93}))
+    _routing_decider(w, jev)
+    body = "who looks after the paperwork when somebody joins?"  # no word rule matches this
+    model.reply({"action": "answer", "markdown": "ok"})
+    turn = await _turn(w, browser, thread, body, "bookings")  # the tab selects bookings
+    assert turn.status_code == 201, turn.text
+    assert len(jev.calls) == 1 and len(jev.calls[0]["questions"]) == 11  # still one request
+    assert [system for _, system, _ in model.calls] == [
+        scoped_prompt(frozenset({"bookings", "hr"}))
+    ]
+
+    # No selector signal at all, and Jev adds one area: the prompt is scoped to that area alone.
+    model.calls.clear()
+    jev.response = _jev(areas={"hr": 0.93})
+    model.reply({"action": "answer", "markdown": "ok"})
+    turn = await _turn(w, browser, thread, body, "overview")
+    assert turn.status_code == 201, turn.text
+    assert [system for _, system, _ in model.calls] == [scoped_prompt(frozenset({"hr"}))]
+
+
+@requires_docker
+async def test_switch_on_a_decider_with_no_yes_keeps_the_full_prompt(planned) -> None:
+    w, model = planned
+    w.app.state.workspace_area_prompts = True
+    browser, _ = await w.member(role="tenant_staff")
+    thread = await _thread(w, browser)
+    _routing_decider(w, FakeJev(_jev()))  # a confident no on all eleven
+    model.reply({"action": "answer", "markdown": "ok"})
+    turn = await _turn(w, browser, thread, "hello", "overview")
+    assert turn.status_code == 201, turn.text
+    assert [system for _, system, _ in model.calls] == [SYSTEM_PROMPT]

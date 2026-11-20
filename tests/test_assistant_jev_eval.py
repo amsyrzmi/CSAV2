@@ -143,6 +143,18 @@ SMOKE_LEFT_OUT = {
     "hr_process_neg-en-3", "hr_process_neg-ms-3", "hr_process_neg-en-4", "hr_process_neg-ms-4",
     "hr_process_neg-en-5", "hr_process_neg-ms-5",
     "hr_task-en-1", "hr_task-ms-1", "hr_task-en-2", "hr_task-ms-2",
+    # The planner-area-prompts cases: they measure the area selector through the planner smoke
+    # (the gate), and depend on the open tab, the open record or the previous turn, which the
+    # routing request does not carry. The area labels of the evaluation are the routing-en-26+
+    # and routing-ms-31+ cases written for it.
+    "cross_area-en-1", "cross_area-en-2", "cross_area-en-3", "cross_area-ms-1", "cross_area-ms-2",
+    "follow_up-en-1", "follow_up-en-2", "follow_up-ms-1",
+    "inbox_decision-en-1", "inbox_decision-ms-1", "no_area-en-1", "no_area-ms-1",
+    "product_stock-en-1", "product_stock-ms-1",
+    "scoped_answer-en-1", "scoped_answer-en-2", "scoped_answer-en-3", "scoped_answer-en-4",
+    "scoped_answer-en-5", "scoped_answer-en-6", "scoped_answer-ms-1",
+    "tab_context-en-1", "tab_context-en-2", "tab_context-ms-1",
+    "training_ask-en-2", "training_ask-ms-2",
 }  # fmt: skip
 
 
