@@ -17,7 +17,7 @@
     "needs:area:email": false,
     "needs:area:inbox": false,
     "needs:area:training": false,
-    "needs:area:hr": false,
+    "needs:area:hr": true,
     "needs:area:bookings": false,
     "needs:area:products": false
    }
@@ -38,7 +38,7 @@
     "needs:area:email": false,
     "needs:area:inbox": false,
     "needs:area:training": false,
-    "needs:area:hr": false,
+    "needs:area:hr": true,
     "needs:area:bookings": false,
     "needs:area:products": false
    }
@@ -542,7 +542,7 @@
     "needs:area:email": false,
     "needs:area:inbox": false,
     "needs:area:training": false,
-    "needs:area:hr": false,
+    "needs:area:hr": true,
     "needs:area:bookings": false,
     "needs:area:products": false
    }
@@ -563,7 +563,7 @@
     "needs:area:email": false,
     "needs:area:inbox": false,
     "needs:area:training": false,
-    "needs:area:hr": false,
+    "needs:area:hr": true,
     "needs:area:bookings": false,
     "needs:area:products": false
    }
@@ -1067,7 +1067,7 @@
     "needs:area:email": false,
     "needs:area:inbox": false,
     "needs:area:training": false,
-    "needs:area:hr": false,
+    "needs:area:hr": true,
     "needs:area:bookings": false,
     "needs:area:products": false
    }
