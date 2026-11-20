@@ -155,6 +155,8 @@ SMOKE_LEFT_OUT = {
     "scoped_answer-en-5", "scoped_answer-en-6", "scoped_answer-ms-1",
     "tab_context-en-1", "tab_context-en-2", "tab_context-ms-1",
     "training_ask-en-2", "training_ask-ms-2",
+    # Added after the gate (it checks the clock reaches a scoped HR turn): no routing question.
+    "hr_date-en-1",
 }  # fmt: skip
 
 

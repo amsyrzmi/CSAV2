@@ -598,6 +598,7 @@ data is synthetic. A PASS checks only the action and the fields named, as above.
 | Tandakan Razak akan berhenti, hari terakhir 20 Disember 2026, dia letak jawatan | The same | The same, in Malay | `scoped_answer-ms-1` |
 | Is Room A free tomorrow? | The Bookings service not active | An answer that Bookings is not active, no booking card | `scoped_answer-en-5` |
 | Please cancel order 1042 on TikTok Shop and refund the customer | Business active | An answer that it is done in TikTok Shop Seller Center, no stock read | `scoped_answer-en-6` |
+| Aina is leaving, her last day is this Friday, she resigned | HR owner, Bookings open (the clock reads Thursday 5 November 2026) | A leave with last_day 2026-11-06 and reason resigned (the company's clock reaches a scoped HR turn). ADDED AFTER THE GATE, NOT MEASURED: it needs one confirm smoke run before the area prompts are switched on | `hr_date-en-1` |
 
 ## Customer persona and planner fixes (2026-11-09)
 

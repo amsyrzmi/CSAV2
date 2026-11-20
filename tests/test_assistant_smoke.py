@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 from csa.decide.completion import CompletionError
 from csa.email.models import DraftProposal
-from csa.workspace.planner import SYSTEM_PROMPT, PlannerOutput, detect_language
+from csa.workspace.planner import SYSTEM_PROMPT, PlannerOutput, detect_language, planner_prompt
 from csa.workspace.prompt_areas import ACTION_AREA
 from csa.workspace.rules import ADDRESS
 from csa.workspace.service import REST_WORDS
@@ -60,7 +60,11 @@ FEATURES = (
     "product_stock",
     "scoped_answer",
     "no_area",
+    "hr_date",
 )
+# Features that have one language only: hr_date-en-1 was ADDED AFTER THE GATE and is NOT
+# MEASURED (it checks that the company's clock reaches a scoped HR turn).
+UNPAIRED = {"hr_date"}
 PEOPLE_ACTIONS = ("hr_person_add", "hr_person_update", "hr_person_leave", "people_query")
 SCRIPTED_SUBJECT = "SCRIPTED-SUBJECT-7f3a"
 SCRIPTED_BODY = "SCRIPTED-BODY-91c2 the scripted wording"
@@ -88,6 +92,9 @@ def test_smoke_cases_parse_and_cover_features() -> None:
         smoke.build_facts(case)  # every preset and override builds valid PlannerFacts
     for feature in FEATURES:
         languages = [case.language for case in cases if _feature(case.id) == feature]
+        if feature in UNPAIRED:
+            assert languages, feature
+            continue
         assert len(languages) >= 2, feature
         assert {"en", "ms"} <= set(languages), feature
     assert {case.language for case in cases} == {"en", "ms"}
@@ -1066,6 +1073,19 @@ def test_cases_that_match_no_area_keep_the_full_prompt() -> None:
         assert not case.expect.areas, case.id
         assert not _case_areas(case), case.id
         assert _selected_areas(case) is None, case.id
+
+
+def test_the_relative_date_hr_case_scopes_to_hr_and_still_carries_the_clock() -> None:
+    """hr_date-en-1 (ADDED AFTER THE GATE, NOT MEASURED): "his last day is this Friday" needs
+    today's date, so a scoped HR turn must still carry the company's clock."""
+    case = next(case for case in smoke.load_cases() if case.id == "hr_date-en-1")
+    assert case.expect.actions == ["hr_person_leave"]
+    assert case.expect.areas == ["hr"]
+    assert _selected_areas(case) == {"hr"}
+    facts = smoke.build_facts(case, use_areas=True)
+    assert facts.bookings is not None and facts.bookings.weekday == "Thursday"
+    user = planner_prompt(case.message, facts)
+    assert '"now_local":"2026-11-05 14:03"' in user and '"weekday":"Thursday"' in user
 
 
 def test_precision_report() -> None:

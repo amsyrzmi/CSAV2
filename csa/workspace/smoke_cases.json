@@ -2312,5 +2312,25 @@
         "product_stock_read"
       ]
     }
+  },
+  {
+    "id": "hr_date-en-1",
+    "language": "en",
+    "message": "Aina is leaving, her last day is this Friday, she resigned",
+    "facts": {
+      "preset": "hr_people_manager_bookings"
+    },
+    "expect": {
+      "actions": [
+        "hr_person_leave"
+      ],
+      "areas": [
+        "hr"
+      ],
+      "fields": {
+        "last_day": "2026-11-06",
+        "reason": "resigned"
+      }
+    }
   }
 ]

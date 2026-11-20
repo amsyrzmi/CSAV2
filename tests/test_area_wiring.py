@@ -226,11 +226,21 @@ def test_scoped_facts_keep_only_the_selected_areas_payloads() -> None:
     everything = {"my_manager", "my_team", "my_employee", "people_access", "bookings",
                   "mailbox_threads"}  # fmt: skip
     assert present(loaded(None)) == everything
-    assert present(loaded(frozenset({"hr"}))) == {"my_manager", "people_access"}
-    assert present(loaded(frozenset({"email"}))) == {"my_manager", "my_team", "mailbox_threads"}
-    assert present(loaded(frozenset({"training"}))) == {"my_employee"}
+    # The company's clock (bookings) is the only date the model has: it travels whenever any area
+    # is selected, so "last day next Friday" on an HR turn still knows today. Only prose is scoped.
+    assert present(loaded(frozenset({"hr"}))) == {"my_manager", "people_access", "bookings"}
+    assert present(loaded(frozenset({"email"}))) == {
+        "my_manager", "my_team", "mailbox_threads", "bookings"
+    }  # fmt: skip
+    assert present(loaded(frozenset({"training"}))) == {"my_employee", "bookings"}
     assert present(loaded(frozenset({"bookings"}))) == {"bookings"}
-    assert present(loaded(frozenset({"inbox"}))) == set()
+    assert present(loaded(frozenset({"inbox"}))) == {"bookings"}
+    assert present(loaded(frozenset({"products", "hr"}))) == {
+        "my_manager", "people_access", "bookings"
+    }  # fmt: skip
+    # An hr turn carries the clock itself, not only the key.
+    hr_clock = loaded(frozenset({"hr"}))["bookings"]
+    assert hr_clock["now_local"] == "2026-11-20 10:00" and hr_clock["weekday"] == "Friday"
     # The general facts always travel.
     data = loaded(frozenset({"inbox"}))
     assert data["page_hint"] == "hint" and data["record_summary"] == "summary"

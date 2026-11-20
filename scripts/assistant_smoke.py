@@ -137,6 +137,7 @@ ActionName = Literal[
 Preset = Literal[
     "staff_basic",
     "hr_people_manager",
+    "hr_people_manager_bookings",
     "staff_with_hr_linked",
     "staff_unlinked",
     "staff_with_mailbox",
@@ -268,6 +269,10 @@ _LINKED = EmployeeFact(linked=True, can_request_training=True, reason=None)
 PRESETS: dict[str, _Preset] = {
     "staff_basic": _Preset("active", _MANAGER, None, _NOT_APPROVER, _LINKED, "directory"),
     "hr_people_manager": _Preset("active", _MANAGER, None, _NOT_APPROVER, _LINKED, "hr"),
+    # The HR owner of a company whose Bookings tab is open: the company's clock is in the facts.
+    "hr_people_manager_bookings": _Preset(
+        "active", _MANAGER, None, _NOT_APPROVER, _LINKED, "hr", can_change_bookings=True
+    ),
     "staff_with_hr_linked": _Preset(
         "active", _MANAGER, None, TeamFact(reports=REPORTS, skipped=SKIPPED, reason=None), _LINKED
     ),
