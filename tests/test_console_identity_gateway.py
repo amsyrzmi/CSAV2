@@ -52,6 +52,7 @@ def application(
         WORKSPACE_ASSISTANT_ENABLED=False,
         TRAINING_VIDEO_ENABLED=False,
         HR_DEFAULT_TEMPLATES_ENABLED=False,
+        WORKSPACE_AREA_PROMPTS=False,
         whatsapp_enabled=whatsapp is not None,
         tiktok_enabled=False,
         TIKTOK_SERVICE_ID=None,
