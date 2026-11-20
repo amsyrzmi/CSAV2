@@ -486,3 +486,43 @@ def test_word_rules_reuse_the_service_words():
     assert "training" in word_rule_areas("a workshop")
     assert word_rule_areas("who is my boss") >= _set("email", "hr")  # manager
     assert "hr" in word_rule_areas("hire someone")  # people
+
+
+# Communication, stock and calendar phrasings found by the final review: the verbs of telling
+# someone something select email, a call or a schedule selects bookings, a stock-count question
+# selects products. Exact sets, with the fact-read needs the turn would derive from the words.
+# (message, tab, expected)
+PHRASINGS: list[tuple[str, str | None, frozenset[Area]]] = [
+    ("write to Danial about the delay", "hr", _set("hr", "email")),
+    ("message Aina that I'm running late", None, _set("hr", "email")),
+    ("let Aina know her onboarding tasks are overdue", None, _set("hr", "email")),
+    ("notify the staff that the office is closed on Monday", None, _set("hr", "email")),
+    ("Tell Razak the customer is waiting", None, _set("inbox", "email")),
+    ("inform Aina that her leave is approved", None, _set("hr", "inbox", "email")),
+    ("beritahu Aina mesyuarat esok dibatalkan", None, _set("bookings", "email")),
+    ("maklumkan Aina cuti diluluskan", None, _set("hr", "email")),
+    ("tulis kepada Danial tentang kelewatan", "hr", _set("hr", "email")),
+    ("how many blue mugs do we have", "hr", _set("hr", "products")),
+    ("berapa banyak mug biru yang kita ada", "hr", _set("hr", "products")),
+    ("set up a call with Aina tomorrow at 3", "hr", _set("hr", "bookings")),
+    ("schedule a call with Aina tomorrow at 3", "email", _set("email", "bookings")),
+    ("check the calendar for Friday", "hr", _set("hr", "bookings")),
+    ("semak kalendar untuk Jumaat", "hr", _set("hr", "bookings")),
+    # Not communication, stock or calendar: the same exact set as before.
+    ("tell me about the leave policy", "hr", _set("hr")),
+    ("let me know when the video is ready", "hr", _set("hr", "training")),
+    ("how many people joined this month", "hr", _set("hr")),
+    ("the clock is slow", None, frozenset()),
+]
+
+
+@pytest.mark.parametrize(
+    ("message", "tab", "expected"), PHRASINGS, ids=[row[0] for row in PHRASINGS]
+)
+def test_communication_stock_and_calendar_phrasings(message, tab, expected):
+    from csa.workspace.service import word_rule_needs
+
+    chosen = select_areas(
+        message, tab=tab, record_kind=None, previous=None, needs=word_rule_needs(message)
+    )
+    assert (chosen or frozenset()) == expected
