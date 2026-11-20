@@ -76,7 +76,8 @@ _AREA_WORDS: dict[Area, re.Pattern[str]] = {
         r"videos?|transcripts?|library|first aid|mohon|belajar|lessons?|pustaka|perpustakaan"
     ),
     "hr": _words(
-        rf"{_WHO}|onboarding|offboarding|tasks?|tugasan|process(?:es)?|proses|overdue|tertunggak|lewat"
+        rf"{_WHO}|hr|onboarding|offboarding|tasks?|tugasan|steps?|langkah|process(?:es)?|proses"
+        r"|overdue|tertunggak|lewat|running late"
         r"|profiles?|profil|leave|leaves|leaving|cuti|berhenti|resign\w*|hire[sd]?|hiring"
         r"|staff|people|kakitangan|pekerja|job titles?|jawatan|start date|tarikh mula|department"
         r"|departments|jabatan|reports? to|melapor kepada|last day|hari terakhir"

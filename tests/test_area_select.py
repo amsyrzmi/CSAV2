@@ -217,6 +217,31 @@ ROWS: list[
         NONE,
         _set("email", "hr"),
     ),
+    # Task 6: an HR request says "HR", a process "step" ("langkah") or that it "is running late".
+    ("hr-word-en", "open the HR tab", None, None, None, NONE, _set("hr")),
+    ("hr-word-ms", "tolong buka tab HR untuk saya", None, None, None, NONE, _set("hr")),
+    (
+        "hr-step-en",
+        "I have finished the bank details step, please mark it done",
+        None,
+        None,
+        None,
+        NONE,
+        _set("hr"),
+    ),
+    (
+        "hr-step-ms",
+        "saya sudah siap langkah butiran bank, tolong tandakan selesai",
+        None,
+        None,
+        None,
+        NONE,
+        _set("hr"),
+    ),
+    ("hr-running-late", "is anything running late", None, None, None, NONE, _set("hr")),
+    # ... and none of those words widens an unrelated message: "late" alone and "hrs" are not HR.
+    ("late-alone", "I will be late tomorrow", None, None, None, NONE, None),
+    ("hrs-not-hr", "we open 9 hrs a day", None, None, None, NONE, None),
     # Needs.
     ("needs-mail", "hello", None, None, None, _needs(mail=True), _set("email")),
     ("needs-team", "hello", None, None, None, _needs(team=True), _set("email")),
