@@ -53,6 +53,13 @@ FEATURES = (
     "email_batch_group",
     "email_batch_rest",
     "plan_bookings",
+    "cross_area",
+    "follow_up",
+    "tab_context",
+    "inbox_decision",
+    "product_stock",
+    "scoped_answer",
+    "no_area",
 )
 PEOPLE_ACTIONS = ("hr_person_add", "hr_person_update", "hr_person_leave", "people_query")
 SCRIPTED_SUBJECT = "SCRIPTED-SUBJECT-7f3a"
@@ -149,7 +156,7 @@ class ScriptedModel:
         if action == "answer":
             return {"action": "answer", "markdown": SCRIPTED_TEXT}
         if action == "booking_action":
-            return {"action": "booking_action", **case.expect.fields}
+            return {"action": "booking_action", "change": "book", **case.expect.fields}
         if action == "navigate":
             # Subscriptions is active in no preset, so it is locked; HR is open in staff_basic.
             # A case that pins its tab gets that tab, as the model would plan it.
@@ -161,8 +168,11 @@ class ScriptedModel:
         if action == "email_compose":
             # The recipient the user asked for: the address in the message, else my_manager.
             found = ADDRESS.search(case.message)
+            picked = re.match(r"Use employee (\S+) for: ", case.message)
             if found is not None:
                 recipient: dict[str, Any] = {"recipient_address": found.group(0)}
+            elif picked is not None:  # a colleague the user picked from the directory result
+                recipient = {"recipient_employee_id": picked.group(1)}
             else:
                 assert facts.my_manager is not None and facts.my_manager.employee_id is not None
                 recipient = {"recipient_employee_id": str(facts.my_manager.employee_id)}
@@ -210,6 +220,21 @@ class ScriptedModel:
             return {"action": "plan", "steps": steps}
         if action == "training_ask":
             return {"action": "training_ask", "question": SCRIPTED_TEXT}
+        if action == "product_stock_read":
+            return {"action": "product_stock_read"}
+        if action == "inbox_decision":
+            # The ids the open conversation's summary carries, as the model would copy them.
+            assert case.facts.record is not None and case.facts.record_summary is not None
+            approval = re.search(r"approval (\d+)", case.facts.record_summary)
+            version = re.search(r"inbox_version (\d+)", case.facts.record_summary)
+            assert approval is not None and version is not None
+            return {
+                "action": "inbox_decision",
+                "approval_id": int(approval.group(1)),
+                "conversation_id": case.facts.record.id,
+                "expected_version": int(version.group(1)),
+                **case.expect.fields,
+            }
         if action == "training_submit":
             return {
                 "action": "training_submit",
@@ -829,9 +854,8 @@ def test_smoke_checks_the_mode_the_server_drafts_with_and_marks_an_inferred_one(
 
 
 # --- Areas, record facts, --areas and --no-widen ----------------------------------------------
-# Enabled in Task 6, once the new cross-area cases exist: until then most cases are single-area
-# on a bare page, so many have no signal and keep the full prompt.
-SCOPED_SHARE_ENFORCED = False
+# The share of cases that get a scoped prompt. A case with no signal at all (a bare navigate to
+# a tab no area owns, a general question) keeps the full prompt on purpose.
 SCOPED_SHARE_FLOOR = 0.9
 
 
@@ -977,23 +1001,69 @@ def _case_areas(case: smoke.SmokeCase) -> set[str]:
     return derived - {"general"}
 
 
-def test_selector_covers_the_expected_areas_of_every_case(
+def _selected_areas(case: smoke.SmokeCase) -> frozenset[str] | None:
+    return smoke.build_facts(case, use_areas=True).areas
+
+
+def test_a_default_run_never_widens_and_never_calls_twice_on_an_out_of_area_output(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Without ``--areas`` the prompt is the full one: an action of any area is in scope, so the
+    case fails on its action alone, with one call, no ``widened`` and no ``replanned``."""
+    case_id = "compose-en-1"
+    model = OutOfAreaModel()
+    assert smoke.main(["--case", case_id], client=model) == 1
+    out = capsys.readouterr().out
+    assert f"FAIL {case_id} action=training_ask actions" in out
+    assert "widened" not in out
+    assert "replanned" not in out
+    assert model.systems == [SYSTEM_PROMPT]
+
+
+def test_selector_covers_the_expected_areas_of_every_case() -> None:
     """Offline, no model: the selector never leaves out an area a case's expected actions need
     (it may select nothing, which keeps the full prompt)."""
-    cases = smoke.load_cases()
-    missed: list[str] = []
-    scoped = 0
-    for case in cases:
-        facts = smoke.build_facts(case, use_areas=True)
-        selected = facts.areas
-        scoped += selected is not None
-        if selected is not None and not _case_areas(case) <= selected:
-            missed.append(f"{case.id} missing {sorted(_case_areas(case) - selected)}")
+    missed = [
+        f"{case.id} missing {sorted(_case_areas(case) - selected)}"
+        for case in smoke.load_cases()
+        if (selected := _selected_areas(case)) is not None and not _case_areas(case) <= selected
+    ]
     assert missed == []
+
+
+def test_scoped_share_is_at_least_90_percent() -> None:
+    """At least 90% of the cases get a scoped prompt; the rest keep the full one on purpose."""
+    cases = smoke.load_cases()
+    unscoped = [case.id for case in cases if _selected_areas(case) is None]
+    scoped = len(cases) - len(unscoped)
     share = scoped / len(cases)
-    print(f"scoped prompt share: {scoped}/{len(cases)} = {share:.0%}")
-    if not SCOPED_SHARE_ENFORCED:
-        pytest.skip("scoped share >= 90% is enabled in Task 6 once the new cases exist")
+    print(f"\nscoped prompt share: {scoped}/{len(cases)} = {share:.1%}; full prompt: {unscoped}")
     assert share >= SCOPED_SHARE_FLOOR
+
+
+def test_cases_that_match_no_area_keep_the_full_prompt() -> None:
+    """A case with ``areas: []`` and only general actions (answer, clarification, navigate) is
+    written to match nothing: the selector must return None, so the prompt is the full one."""
+    matches_nothing = [case for case in smoke.load_cases() if case.id.startswith("no_area-")]
+    assert len(matches_nothing) >= 2
+    for case in matches_nothing:
+        assert not case.expect.areas, case.id
+        assert not _case_areas(case), case.id
+        assert _selected_areas(case) is None, case.id
+
+
+def test_precision_report() -> None:
+    """REPORT ONLY (run with ``-s``): per scoped case, how many selected areas the case does not
+    need, and the mean over the scoped cases. Nothing is asserted: it measures the cost of the
+    selector erring on the side of including more."""
+    rows: list[tuple[str, int]] = []
+    for case in smoke.load_cases():
+        selected = _selected_areas(case)
+        if selected is not None:
+            rows.append((case.id, len(selected - _case_areas(case))))
+    mean = sum(extra for _, extra in rows) / len(rows)
+    print()
+    for case_id, extra in rows:
+        print(f"precision {case_id}: {extra} extra")
+    print(f"precision mean extra areas over {len(rows)} scoped cases: {mean:.2f}")
+    assert rows

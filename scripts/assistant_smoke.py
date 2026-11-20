@@ -14,7 +14,7 @@ synthetic presets below.
 It runs inside the staging gateway container, which has the model key mounted::
 
     docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke [--repeat N] [--case ID]
-        [--areas [--no-widen]]
+        [--areas] [--no-widen]
 
 Output is content-free: one ``PASS|FAIL <id> action=<action>`` line per sample, the failing
 field names after a failure, ``replanned`` when the one correction was used, ``widened`` when
@@ -23,8 +23,8 @@ when a batch email's mode came from the server (the planner left it out), ``RATE
 case with ``--repeat``, and a last ``N passed, M failed`` line. Never a message, model text,
 subject, body or address; the key is never printed. Exit 0 when every sample passes, 1 when any
 fails, 2 on a setup error (no model key, the model unavailable on the first call, an unknown
-case id, a missing or invalid case file). A run is about 110 model calls: a planner call for
-each of the 99 cases plus a drafting call for each of the 11 draft cases, up to about 209 with
+case id, a missing or invalid case file). A run is about 136 model calls: a planner call for
+each of the 125 cases plus a drafting call for each of the 11 draft cases, up to about 261 with
 re-plans (up to twice the cases, plus the drafting calls).
 """
 
@@ -132,6 +132,7 @@ ActionName = Literal[
     "email_batch",
     "plan",
     "training_ask",
+    "product_stock_read",
 ]
 Preset = Literal[
     "staff_basic",
