@@ -1,0 +1,55 @@
+"""Throwaway: a compact action catalogue generated from PlannerOutput's schema."""
+from __future__ import annotations
+import json
+from typing import Any
+
+
+def _type(node: dict[str, Any], defs: dict[str, Any], depth: int = 0) -> str:
+    if "$ref" in node:
+        return _obj(defs[node["$ref"].split("/")[-1]], defs, depth + 1)
+    if "const" in node:
+        return json.dumps(node["const"])
+    if "enum" in node:
+        return "|".join(json.dumps(v) for v in node["enum"])
+    for key in ("anyOf", "oneOf"):
+        if key in node:
+            parts = [_type(n, defs, depth) for n in node[key] if n.get("type") != "null"]
+            return "|".join(parts)
+    kind = node.get("type")
+    if kind == "array":
+        return "[" + _type(node.get("items", {}), defs, depth) + "]"
+    if node.get("format") == "date":
+        return '"YYYY-MM-DD"'
+    if kind == "object":
+        if "properties" in node:
+            return _obj(node, defs, depth + 1)
+        return "object"
+    return str(kind or "any")
+
+
+def _obj(node: dict[str, Any], defs: dict[str, Any], depth: int = 0, skip: str = "") -> str:
+    required = set(node.get("required", []))
+    fields = []
+    for name, spec in node.get("properties", {}).items():
+        if name == skip:
+            continue
+        mark = "" if name in required else "?"
+        fields.append(f"{name}{mark}: {_type(spec, defs, depth)}")
+    return "{" + ", ".join(fields) + "}"
+
+
+def compact_schema(schema: dict[str, Any]) -> str:
+    defs = schema["$defs"]
+    mapping = schema["properties"]["proposal"]["discriminator"]["mapping"]
+    lines = ['Return {"proposal": P}. P is ONE object with "action" set to one of the names below '
+             "and only that action's fields; a field marked ? may be left out."]
+    for action, ref in mapping.items():
+        d = defs[ref.split("/")[-1]]
+        note = " ".join(d.get("description", "").split())
+        lines.append(f"- {action}: {_obj(d, defs, skip='action')}" + (f"\n  {note}" if note else ""))
+    nested = {"RecipientSpec", "BookingFreeAsk", "RecordRef", "ClarificationOption"}
+    for name in sorted(nested):
+        note = " ".join(defs.get(name, {}).get("description", "").split())
+        if note:
+            lines.append(f"{name}: {note}")
+    return "\n".join(lines)

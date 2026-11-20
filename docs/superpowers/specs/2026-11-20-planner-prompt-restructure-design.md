@@ -157,3 +157,26 @@ rollback is a normal rollout of the previous commit.
 - The hosted model can change under us; a baseline taken on another day is not comparable, which is
   why baseline and candidate run the same day.
 - `hr_process_neg-ms-5` stays failing either way; it is not made worse and is tracked separately.
+
+## Starting point and how a candidate is measured
+
+- **Variant B survives.** Its generator is kept beside this doc as
+  `2026-11-20-planner-prompt-restructure-assets/variant_b_compact.py.txt` (55 lines, throwaway
+  quality). The build starts from it: first reproduce B's result (474/495 with the three known
+  regressions) with the real module, then fix the three. The only change to `planner.py` in the
+  experiment was importing the generator and putting its output in place of the `json.dumps` of the
+  schema.
+- **How a run is done.** `throwaway_smoke_run.sh.txt` (same folder) runs a worktree's `csa/` and
+  `scripts/` over the current staging gateway image in a throwaway container, joined to the staging
+  gateway's network and volumes with its environment passed through without printing it. Usage:
+  `<script> <worktree> <repeat> [case...]`; it prints only the FAIL, RATE and summary lines. No
+  image build is needed. The script reads the gateway's environment (including the model key) but
+  never echoes it.
+- **Who runs it:** the builder, in that container, only inside the smoke budget below.
+
+## Smoke budget (the owner's call)
+
+A full run is 99 cases x 5 samples = 495 model calls on the owner's key. The proposed budget, for
+one yes covering the whole project: up to 4 full runs at `--repeat 5` (the baseline, the first
+reproduction of B, and two candidates) plus targeted `--case` runs of up to 10 samples each for the
+regression fixes, and one final full run on staging after merge. A fifth full run needs a new yes.

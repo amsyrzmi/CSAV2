@@ -1,0 +1,9 @@
+#!/bin/bash
+# usage: trial2.sh <worktree> <repeat> [case...]   (whole worktree code over the current staging image)
+wt=$1; rep=$2; shift 2
+args=""; for c in "$@"; do args="$args --case $c"; done
+docker run --rm --network container:csa-staging-gateway-1 --volumes-from csa-staging-gateway-1:ro \
+  --env-file <(docker inspect csa-staging-gateway-1 --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^[A-Za-z_][A-Za-z0-9_]*=') \
+  -v "$wt/csa:/app/csa:ro" -v "$wt/scripts:/app/scripts:ro" \
+  --entrypoint python $(docker inspect csa-staging-gateway-1 --format "{{.Image}}") \
+  -m scripts.assistant_smoke --repeat $rep $args 2>&1 | grep -E "^(FAIL|RATE|[0-9]+ passed)|setup error"
