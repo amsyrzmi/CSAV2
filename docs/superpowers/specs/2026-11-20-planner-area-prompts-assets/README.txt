@@ -26,7 +26,3 @@ Note on the files: they hold only FAIL lines, RATE lines and the final total; PA
 when the outputs were captured. The "0 of 625 samples widened" count for candidate3_widen.txt was therefore
 read from the full output at run time (the run's filter kept any line with the word `widened`, and none
 appeared); it cannot be audited from the committed file. No FAIL line in that file carries `widened`.
-
-candidate6_confirm.txt: the confirm run of 2026-11-20 after both phases merged (main d5e2346e, --areas --no-widen,
-126 cases, 5 samples = 630, 623 passed). Compare with baseline.txt (125 cases, same day): `hr_date-en-1` is not in the
-baseline and is reported by smoke_compare as missing from it; it scored 5/5. Same filtering as the other files.

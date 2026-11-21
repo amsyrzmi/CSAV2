@@ -400,7 +400,9 @@ with `WORKSPACE_AREA_PROMPTS` still off.
   down and seven up; its one VIOLATION line is `hr_date-en-1` missing from the baseline (the case
   was added after the baseline; it scored 5/5). The failing samples are the same cases that failed
   on the baseline: `hr_process_neg-ms-5` 0/5 (open), `email_batch_rest-en-1` 4/5,
-  `email_batch_rest-ms-1` 4/5 (was 1/5). This was the sixth and last full run.
+  `email_batch_rest-ms-1` 4/5 (was 1/5). This was the sixth and last full run. Its raw output file was in the session's scratch
+  directory, which was cleared before it could be committed, so only these figures (read from the
+  run's `smoke_compare` and FAIL output) are recorded; the earlier runs' files are in the assets directory.
 - **Jev evaluation** (owner's key, 194 labelled messages): 14 of 15 questions met their target, all
   five existing routing and email questions, injection at 100% (target 95%) and five of the six
   area questions. `needs:area:hr` scored 87% on 111 confident answers (target 90%): 10 confident
