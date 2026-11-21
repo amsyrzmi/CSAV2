@@ -21,8 +21,8 @@ docker exec csa-staging-gateway-1 python -m scripts.assistant_smoke
   or an unknown case id.
 - The cases live in `csa/workspace/smoke_cases.json`. A unit test checks that every case id appears
   in this checklist and that every id cited here is a case.
-- A run is about 136 model calls: one planner call for each of the 125 cases plus one drafting call
-  for each of the 11 draft cases. With re-plans it is up to about 261 (up to twice the cases, plus
+- A run is about 137 model calls: one planner call for each of the 126 cases plus one drafting call
+  for each of the 11 draft cases. With re-plans it is up to about 263 (up to twice the cases, plus
   the drafting calls).
 
 **What a PASS checks, and nothing more.** Each case goes through the turn's own correction loop (at

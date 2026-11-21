@@ -345,9 +345,9 @@ experiments of 5 to 10 samples. No sixth full run.
    call ...", "how many blue mugs do we have" on another tab). The gate's 0 misses holds by
    construction on those 125 cases; tight words were added afterwards (no measured case changed its
    selected set), but other phrasings may still be missed, and widening cannot see an in-area miss.
-2. Changed after the gate, not measured: the company's clock now travels on every scoped turn
-   (final review, I2), and the new smoke case `hr_date-en-1` was added after the gate and has never
-   been run. One confirm smoke run is needed before switch-on, which needs the owner's yes.
+2. Changed after the gate: the company's clock now travels on every scoped turn (final review,
+   I2), and the new smoke case `hr_date-en-1` was added after the gate. **Measured 2026-11-20** by
+   the confirm run below (623/630, `hr_date-en-1` 5/5).
 3. Staging switch-on must watch the `workspace_scoped_turn` log (areas, widen cause, final action)
    to audit in-area misses, not only the widened share.
 4. The products plus inbox companion and the weak-word rules (approve, who is) were tuned on
@@ -374,14 +374,39 @@ Points for the phase B pull request text:
 - Before routing goes to `cascade` for areas, the owner runs `scripts/assistant_jev_eval.py` with
   their own key, compares the five fact questions against the last five-question run, and reads
   `false_yes` per area question.
-- After merge, watch the `jev_call` log line (`questions=`, `latency_ms`): the request now holds
-  eleven questions where it held five, which can change its latency.
+- After merge, watch the `jev_call` log line (`questions=`, `latency_ms`): where the request asks
+  the area questions (the routing decider in `shadow`, as on production, or the switch on) it holds
+  eleven questions where it held five, which can change its latency. With the switch off and any
+  other mode it still holds five.
 
 ### Owner decisions still open
 
-- Whether a switch-on PR for staging (`WORKSPACE_AREA_PROMPTS`, with a widen log) follows now. The
-  switch is off by default and no rollout file changed. The design's one final staging smoke run after
-  the switch is on needs its own yes (a sixth full run is outside the approved budget).
-- Phase B: build the decider's area answers (task 8 of the plan), and later turn routing to `cascade`
-  only after the owner runs `scripts/assistant_jev_eval.py`.
+- Whether a switch-on PR for staging (`WORKSPACE_AREA_PROMPTS`; the `workspace_scoped_turn` log
+  exists) follows now. The switch is off by default and no rollout file changed. The design's one
+  final staging smoke run after the switch is on needs its own yes (the sixth full run, the confirm
+  run below, used the budget).
+- Phase B is built and merged (#172). Routing goes to `cascade` for areas only once
+  `scripts/assistant_jev_eval.py` meets its targets for the area questions (see the evaluation
+  below).
 - Whether to accept the `{email, hr}` booking-step-shape ruling and the `resolve` widening ruling.
+
+### After the merges (2026-11-20)
+
+Phase A (#171, with the test-settings fix #173) and phase B (#172) are merged; staging runs d5e2346e
+with `WORKSPACE_AREA_PROMPTS` still off.
+
+- **Confirm smoke run** (owner's yes, throwaway container, `--areas --no-widen`, whole file at 5
+  samples = 630, 126 cases, same-day baseline 602/625): 623/630. `smoke_compare` printed no case
+  down and seven up; its one VIOLATION line is `hr_date-en-1` missing from the baseline (the case
+  was added after the baseline; it scored 5/5). The failing samples are the same cases that failed
+  on the baseline: `hr_process_neg-ms-5` 0/5 (open), `email_batch_rest-en-1` 4/5,
+  `email_batch_rest-ms-1` 4/5 (was 1/5). This was the sixth and last full run.
+- **Jev evaluation** (owner's key, 194 labelled messages): 14 of 15 questions met their target, all
+  five existing routing and email questions, injection at 100% (target 95%) and five of the six
+  area questions. `needs:area:hr` scored 87% on 111 confident answers (target 90%): 10 confident
+  yes where the label said no, 4 the other way, Malay 82%. At least three of the named mislabelled
+  cases are manager look-ups the selector already sends to hr, so the labels (not Jev) disagreed
+  with the design; PR #174 relabels five of them. The per-case ids beyond five are not printed, so
+  the re-run is the check. Routing stays out of `cascade` for the hr area question until it meets
+  its target; a false yes only widens a prompt and a false no leaves the word rules, so nothing a
+  user sees depends on it today.
