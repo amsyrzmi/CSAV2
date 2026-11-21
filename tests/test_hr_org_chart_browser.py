@@ -536,6 +536,17 @@ async def test_print_asks_the_browser_and_shows_the_whole_tree_without_the_conso
                     .map(element => element.tagName + (element.getAttribute('aria-label') ?? ''))"""
             )
             assert hidden == [], hidden
+            # Switching to print restarts the colour transitions; sample the ink only after they
+            # have finished, or a mid-transition colour (night's light text fading to dark) fails
+            # the contrast checks below on a slow runner.
+            await page.evaluate(
+                """async () => {
+                    await new Promise(resolve => requestAnimationFrame(() => resolve(null)));
+                    await Promise.all(document.getAnimations().map(
+                        animation => animation.finished.catch(() => null)
+                    ));
+                }"""
+            )
             ink = await page.evaluate(
                 """() => {
                     const rgb = text => text.match(/[\\d.]+/g).map(Number);
